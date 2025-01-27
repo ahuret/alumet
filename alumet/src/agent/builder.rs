@@ -14,6 +14,9 @@ use crate::{
 
 use super::plugin::PluginSet;
 
+#[cfg(any(test, feature="test"))]
+use crate::test::StartupExpectations;
+
 /// An Agent that has been started.
 pub struct RunningAgent {
     pub pipeline: pipeline::MeasurementPipeline,
@@ -287,6 +290,12 @@ impl Builder {
             initialized_plugins,
         };
         Ok(agent)
+    }
+
+    #[cfg(any(feature="test", test))]
+    pub fn with_expectations(mut self, expectations: StartupExpectations) -> Self{
+        expectations.apply(&mut self);
+        self
     }
 }
 
