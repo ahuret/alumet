@@ -52,33 +52,86 @@
 
 use std::time::Duration;
 
-use alumet::{agent, measurement::MeasurementPoint, metrics::Metric, static_plugins};
+use alumet::{agent::{self, plugin::PluginSet}, measurement::{MeasurementPoint, Timestamp}, metrics::Metric, pipeline::naming::SourceName, plugin::rust::AlumetPlugin, static_plugins};
 
 
 const TIMEOUT: Duration = Duration::from_secs(2);
 
+struct TestedPlugin;
+
+impl AlumetPlugin for TestedPlugin {
+    fn name() -> &'static str {
+        "tested"
+    }
+
+    fn version() -> &'static str {
+        "0.1.0"
+    }
+
+    fn init(config: alumet::plugin::ConfigTable) -> anyhow::Result<Box<Self>> {
+        Ok(Box::new(Self))
+    }
+
+    fn default_config() -> anyhow::Result<Option<alumet::plugin::ConfigTable>> {
+        Ok(None)
+    }
+
+    fn start(&mut self, alumet: &mut alumet::plugin::AlumetPluginStart) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn stop(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
 #[test]
 fn plugin_in_pipeline() {
-    struct TestedPlugin;
+    let mut plugins = PluginSet::from(static_plugins![TestedPlugin]);
 
-    let tester = alumet::test::RuntimeExpectations::new()
-        // TODO expliquer comment trouver le nom des sources automatiques
-        .source_output("tested/source/1", |m| {
-            assert_eq!(m.len(), 2);
-            assert_eq!(m[0].value, 123.5);
-        })
-        .transform_result("t1", || {
+    let runtime = alumet::test::RuntimeExpectations::new()
+        // Test des sources :
+        // - modifier l'environnement
+        // - trigger manuel ou périodique
+        // - source.poll() -> mesures
+        // - on vérifie les mesures
+        .source_result(SourceName::from_str("tested", "s1"), 
+            || {
+                // modifier l'environnement
+                todo!()
+            }
+            , // trigger par le module de test
+            |m| {
+                // vérification du résultat
+                assert_eq!(m.len(), 2);
+                assert_eq!(m[0].value, 123.5);
+            }
+        )
+        .transform_result("t1", |ctx| {
+            // création de l'entrée
             let mut input = MeasurementBuffer::new();
-            input.push(MeasurementPoint::new(...);
+            let t = Timestamp::now();
+            let metric1 = ctx.metrics().by_name("rapl_consumed_energy").unwrap();
+            let metric2 = ctx.metrics().by_name("rapl_max_power").unwrap();
+            input.push(MeasurementPoint::new(t, metric1, ...));
+            input.push(MeasurementPoint::new(t, metric2, ...));
             // ...
-            (input, MeasurementOrigin::Source(rapl_source_id))
-        }, |output| {assert_eq!(output, ...)})
+            input
+        }, |output| {
+            // vérification du résultat
+            assert_eq!(output, ...)
+        })
+        .output_result("out", |ctx| {
+            // création de l'entrée
+            let mut input = MeasurementBuffer::new();
+            todo!();
+            input
+        }, |output| {
+            // vérification de la sortie
+            todo!()
+        })
         .build();
-    
-    let mut plugins = static_plugins![TestedPlugin];
-    
-    let mut plugins = agent::plugin::PluginSet::new(plugins);
-    
+        
     let expectations = alumet::test::StartupExpectations::default()
         .start_metric( Metric { ... })
         .start_metric( Metric { ... })
@@ -89,7 +142,7 @@ fn plugin_in_pipeline() {
 
     let agent = agent::Builder::new(plugins)
         .with_expectations(expectations)
-        .with_tester(tester)
+        .with_expectations(runtime)
         .build_and_start()
         .expect("startup failure");
     
