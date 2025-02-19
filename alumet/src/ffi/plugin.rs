@@ -4,7 +4,7 @@ use libc::c_void;
 
 use crate::measurement::WrappedMeasurementType;
 use crate::metrics::def::RawMetricId;
-use crate::pipeline::trigger;
+use crate::pipeline::elements::source::trigger;
 use crate::{plugin::AlumetPluginStart, units::Unit};
 
 use super::pipeline::{FfiOutput, FfiTransform};
