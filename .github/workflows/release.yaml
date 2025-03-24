@@ -82,7 +82,7 @@ jobs:
     needs:
       - gather-informations
       - create-rpm
-    uses: alumet-dev/packaging/.github/workflows/build_docker.yaml@main
+    uses: ahuret/packaging/.github/workflows/build_docker.yaml@main
     with:
       target-architecture: x86_64
       build-version: ${{ needs.gather-informations.outputs.version }}
