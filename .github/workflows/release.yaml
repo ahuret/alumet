@@ -165,6 +165,7 @@ jobs:
   push-docker:
     needs:
       - build-docker
+      - build-deb
     runs-on: ubuntu-latest
     steps:
       - name: Create docker artifacts directory
