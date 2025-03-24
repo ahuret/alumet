@@ -78,6 +78,15 @@ jobs:
       release-version: ${{ needs.gather-informations.outputs.release }}
       tag: ${{ needs.gather-informations.outputs.tag }}
 
+  build-deb:
+    needs: gather-informations
+    uses: alumet-dev/packaging/.github/workflows/build_deb.yaml@main
+    with:
+      arch: amd64
+      version: ${{ needs.gather-informations.outputs.version }}
+      revision: ${{ needs.gather-informations.outputs.release }}
+      tag: ${{ needs.gather-informations.outputs.tag }}
+
   build-docker:
     needs:
       - gather-informations
