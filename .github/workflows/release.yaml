@@ -90,7 +90,8 @@ jobs:
   build-docker:
     needs:
       - gather-informations
-      - create-rpm
+      - build-rpm
+      - build-deb
     uses: ahuret/packaging/.github/workflows/build_docker.yaml@main
     with:
       target-architecture: x86_64
