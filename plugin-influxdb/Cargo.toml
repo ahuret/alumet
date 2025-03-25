@@ -10,6 +10,9 @@ log = "0.4.22"
 serde = { version = "1.0.210", features = ["derive"] }
 tokio = { version = "1.40.0", features = ["rt"] }
 
+[dev-dependencies]
+alumet = {path = "../alumet", features = ["test"]}
+
 # Use RusTLS instead of OpenSSL on musl
 # Disable HTTP2 feature of reqwest because it's not supported by InfluxDB.
 [target.'cfg(target_env = "musl")'.dependencies]

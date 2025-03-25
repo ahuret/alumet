@@ -268,4 +268,43 @@ measurement_without_tags fieldKey="fieldValue",bool=T,float=123,int=-123i,uint=1
             line.0
         )
     }
+
+    use alumet::{
+        agent::{self, plugin::PluginSet},
+        units::Unit,
+        static_plugins,
+    };
+    use crate::{
+        InfluxDbPlugin,
+        Config,
+        AttributeAs,
+    };
+
+    #[test]
+    fn startup_ok() {
+        const TIMEOUT: Duration = Duration::from_secs(5);
+        //let influxPlugin = InfluxDbPlugin{ config: Some()};
+        let config = Config{
+            host: String::from("http://localhost:8086"),
+            token: String::from("seed-token"),
+            org: String::from("seed"),
+            bucket: String::from("pods"),
+            attributes_as: AttributeAs::Field,
+            attributes_as_tags: None,
+            attributes_as_fields: None,
+        };
+        let influxDBPlugin = InfluxDbPlugin{config: Some(config)};
+        let plugins = PluginSet::from(static_plugins![influxDBPlugin]);
+    
+        let startup = alumet::test::StartupExpectations::new()
+            .expect_source("plugin", "coffee_source");
+    
+        let agent = agent::Builder::new(plugins)
+            .with_expectations(startup)
+            .build_and_start()
+            .unwrap();
+    
+        agent.pipeline.control_handle().shutdown();
+        agent.wait_for_shutdown(TIMEOUT).unwrap();
+    }
 }
