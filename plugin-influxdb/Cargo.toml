@@ -12,6 +12,10 @@ tokio = { version = "1.40.0", features = ["rt"] }
 
 [dev-dependencies]
 alumet = {path = "../alumet", features = ["test"]}
+toml = "0.8.19"
+mockito = "1.7.0"
+once_cell = "1.21.1"
+plugin_tests = { path = "../plugin-tests" }
 
 # Use RusTLS instead of OpenSSL on musl
 # Disable HTTP2 feature of reqwest because it's not supported by InfluxDB.

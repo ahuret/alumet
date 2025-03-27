@@ -122,7 +122,7 @@ impl NvidiaPlugin {
                 log::debug!("\t- channel {} \"{}\": {}", chan.id, chan.label, description);
             }
         }
-        let source = jetson::JetsonInaSource::open_sensors(sensors, alumet)?;
+        let source = TestSource::new(alumet)?;
         let trigger = TriggerSpec::builder(self.config.poll_interval)
             .flush_interval(self.config.flush_interval)
             .build()?;

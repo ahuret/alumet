@@ -19,6 +19,7 @@ members = [
     "plugin-relay",
     "plugin-socket-control",
     "plugin-mongodb",
+    "plugin-tests",
     "test-dynamic-plugins",
 ]
 

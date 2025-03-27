@@ -100,6 +100,7 @@ impl From<Vec<PluginMetadata>> for PluginSet {
     ///
     /// Every plugin is marked as enabled. No configuration is attached to the plugins.
     fn from(metadata: Vec<PluginMetadata>) -> Self {
+        println!("PluginSet::from");
         let map = BTreeMap::from_iter(metadata.into_iter().map(|m| (m.name.clone(), PluginInfo::new(m))));
         Self(map)
     }

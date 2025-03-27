@@ -38,13 +38,14 @@ impl Client {
         )?;
         let res = self
             .client
-            .post(url)
+            .post(url.clone())
             .header(header::AUTHORIZATION, &self.token_header)
             .header(header::ACCEPT, "application/json")
             .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
             .body(data.0)
             .send()
             .await?;
+
         res.error_for_status()?;
         Ok(())
     }
@@ -219,7 +220,7 @@ mod tests {
 
     use crate::influxdb2::escape_string;
 
-    use super::LineProtocolData;
+    use super::{Client, LineProtocolBuilder, LineProtocolData};
 
     #[test]
     fn escaping() {
@@ -231,8 +232,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn build_line() {
+    struct TestedLineProtocolData {
+        line: LineProtocolData,
+        expected_str: &'static str,
+    }
+
+    fn get_tested_lines() -> Vec<TestedLineProtocolData> {
+        let mut tested_lines =Vec::new();
+
         let mut builder = LineProtocolData::builder();
         builder
             .measurement("myMeasurement")
@@ -241,10 +248,11 @@ mod tests {
             .field_string("fieldKey", "fieldValue")
             .timestamp(Timestamp::from(UNIX_EPOCH + Duration::from_nanos(1556813561098000000)));
         let line = builder.build();
-        assert_eq!(
-            r#"myMeasurement,tag1=value1,tag2=value2 fieldKey="fieldValue" 1556813561098000000"#,
-            line.0
-        );
+
+        tested_lines.push(TestedLineProtocolData{
+            line: line,
+            expected_str: r#"myMeasurement,tag1=value1,tag2=value2 fieldKey="fieldValue" 1556813561098000000"#,
+        });
 
         let mut builder = LineProtocolData::builder();
         builder
@@ -262,49 +270,205 @@ mod tests {
             .field_uint("uint", 123)
             .timestamp(Timestamp::from(UNIX_EPOCH + Duration::from_nanos(1556813561098000000)));
         let line = builder.build();
-        assert_eq!(
-            r#"myMeasurement,tag1=value1,tag2=value2 fieldKey="fieldValue" 1556813561098000000
-measurement_without_tags fieldKey="fieldValue",bool=T,float=123,int=-123i,uint=123u 1556813561098000000"#,
-            line.0
-        )
+        tested_lines.push(TestedLineProtocolData{
+            line: line,
+            expected_str: r#"myMeasurement,tag1=value1,tag2=value2 fieldKey="fieldValue" 1556813561098000000
+measurement_without_tags fieldKey="fieldValue",bool=T,float=123,int=-123i,uint=123u 1556813561098000000"#, 
+        });
+        tested_lines
     }
-
-    use alumet::{
-        agent::{self, plugin::PluginSet},
-        units::Unit,
-        static_plugins,
-    };
-    use crate::{
-        InfluxDbPlugin,
-        Config,
-        AttributeAs,
-    };
 
     #[test]
-    fn startup_ok() {
-        const TIMEOUT: Duration = Duration::from_secs(5);
-        //let influxPlugin = InfluxDbPlugin{ config: Some()};
-        let config = Config{
-            host: String::from("http://localhost:8086"),
-            token: String::from("seed-token"),
-            org: String::from("seed"),
-            bucket: String::from("pods"),
-            attributes_as: AttributeAs::Field,
-            attributes_as_tags: None,
-            attributes_as_fields: None,
-        };
-        let influxDBPlugin = InfluxDbPlugin{config: Some(config)};
-        let plugins = PluginSet::from(static_plugins![influxDBPlugin]);
-    
-        let startup = alumet::test::StartupExpectations::new()
-            .expect_source("plugin", "coffee_source");
-    
-        let agent = agent::Builder::new(plugins)
-            .with_expectations(startup)
-            .build_and_start()
-            .unwrap();
-    
-        agent.pipeline.control_handle().shutdown();
-        agent.wait_for_shutdown(TIMEOUT).unwrap();
+    fn build_line() {
+        for tested_line in get_tested_lines() {
+            assert_eq!(tested_line.line.0, tested_line.expected_str);
+        }
     }
+
+    use mockito::{Matcher, Server};
+
+    #[tokio::test]
+    async fn write() {
+        let mut server = Server::new_async().await;
+
+        let token = "sometoken";
+        let token_header = format!("Token {}", token);
+        
+        let influx_client = Client::new(server.url(), String::from(token));
+
+        assert_eq!(influx_client.write_url, format!("{}/api/v2/write", server.url()), "influx write_url doesn't have the expected format when Client is created");
+        assert_eq!(influx_client.token_header, token_header, "influx token header doesn't have the expected format when Client is created");
+
+        for tested_line in get_tested_lines() {
+            let mock = server.mock("POST", "/api/v2/write")
+                .match_query(Matcher::AllOf(vec![
+                    Matcher::UrlEncoded("org".into(), "someorg".into()),
+                    Matcher::UrlEncoded("bucket".into(), "somebucket".into()),
+                    Matcher::UrlEncoded("precision".into(), "ns".into()),
+                ]))
+                .match_header("authorization", token_header.as_str())
+                .match_header("accept", "application/json")
+                .match_header("Content-Type", "text/plain; charset=utf-8")
+                .match_body(tested_line.expected_str)
+                .with_status(204)
+                .create_async().await;
+
+            let _ = influx_client.write("someorg", "somebucket", tested_line.line).await;
+            mock.assert();
+        }
+
+        let mock = server.mock("POST", "/api/v2/write")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("org".into(), "someorg".into()),
+                Matcher::UrlEncoded("bucket".into(), "somebucket".into()),
+                Matcher::UrlEncoded("precision".into(), "ns".into()),
+            ]))
+            .match_header("authorization", token_header.as_str())
+            .match_header("accept", "application/json")
+            .match_header("Content-Type", "text/plain; charset=utf-8")
+            .match_body("")
+            .with_status(204)
+            .create_async().await;
+
+        let _ = influx_client.test_write("someorg", "somebucket").await;
+        mock.assert();
+    }
+
+    #[test]
+    fn test_with_capacity() {
+        let capacity = 100;
+        let builder = LineProtocolBuilder::with_capacity(capacity);
+
+        // Check that the buffer has the requested capacity
+        assert!(builder.buf.capacity() >= capacity, "Buffer capacity is less than requested");
+
+        // Ensure `after_first_field` is initialized correctly
+        assert_eq!(builder.after_first_field, false, "after_first_field should be false on initialization");
+    }
+
+    //use alumet::plugin::PluginMetadata;
+    //use alumet::agent::plugin::PluginInfo;
+    //use alumet::{
+    //    agent::{self, plugin::PluginSet},
+    //    pipeline::{
+    //        naming::{OutputName},
+    //    },
+    //    test::{StartupExpectations,RuntimeExpectations, runtime::OutputCheckInputContext},
+    //    measurement::{MeasurementBuffer, WrappedMeasurementType},
+    //    metrics::Metric,
+    //    units::{Unit, PrefixedUnit},
+    //};
+    //use crate::{
+    //    InfluxDbPlugin,
+    //    Config,
+    //    AttributeAs,
+    //};
+    //use httpmock::prelude::*;
+    //use once_cell::sync::Lazy;
+    //use plugin_tests::TestsPlugin;
+
+    //#[test]
+    //fn startup_ok() {
+    //    let config = Config{
+    //        host: String::from("http://localhost:8086"),
+    //        token: String::from("seed-token"),
+    //        org: String::from("seed"),
+    //        bucket: String::from("pods"),
+    //        attributes_as: AttributeAs::Field,
+    //        attributes_as_tags: None,
+    //        attributes_as_fields: None,
+    //    };
+    //    
+    //    let mut plugins = PluginSet::new();
+    //    plugins.add_plugin(PluginInfo{
+    //        metadata: PluginMetadata::from_static::<InfluxDbPlugin>(),
+    //        enabled: true,
+    //        config: Some(config_to_toml_table(&config)),
+    //    });
+    //    let testConfig = toml::Value::try_from(plugin_tests::Config::default()).unwrap().as_table().unwrap().clone();
+    //    PluginMetadata::from_static::<TestsPlugin>();
+
+    //    let make_input = |ctx: &mut OutputCheckInputContext| -> MeasurementBuffer {
+    //        println!("################");
+    //        println!("INTO MAKE INPUT");
+    //        println!("################");
+    //        println!("{}", ctx.metrics().len());
+    //        MeasurementBuffer::new()
+    //    };
+    //    let check_output = || {
+    //        println!("################");
+    //        println!("INTO CHECK OUTPUT");
+    //        println!("################");
+    //    };
+
+    //    let runtime_expectations = RuntimeExpectations::new()
+    //        .test_output(
+    //            OutputName::from_str("influxdb", "out"),
+    //            make_input,
+    //            check_output,
+    //        );
+    //
+    //    let agent = agent::Builder::new(plugins)
+    //        .with_expectations(runtime_expectations)
+    //        .build_and_start()
+    //        .unwrap();
+    //
+    //    agent.pipeline.control_handle().shutdown();
+    //    agent.wait_for_shutdown(Duration::from_secs(2)).unwrap();
+    //}
+    //fn config_to_toml_table(config: &Config) -> toml::Table {
+    //    toml::Value::try_from(config).unwrap().as_table().unwrap().clone()
+    //}
 }
+        //static SERVER: Lazy<MockServer> = Lazy::new(|| MockServer::start());
+        //let test_write_mock = SERVER.mock(|when, then| {
+        //    when.method(POST)
+        //        .path("/api/v2/write")
+        //        .query_param("org", "someorg")
+        //        .query_param("bucket", "somebucket")
+        //        .query_param("precision", "ns")
+        //        .header("authorization", "Token sometoken")
+        //        .header("Content-Type", "text/plain; charset=utf-8");
+        //    then.status(204);
+        //});
+
+        //let another_mock = SERVER.mock(|when, then| {
+        //    when.method(POST)
+        //        .path("/testOK");
+        //    then.status(200);
+        //});
+
+        //let config = Config{
+        //    host: SERVER.url(""),
+        //    token: String::from("sometoken"),
+        //    org: String::from("someorg"),
+        //    bucket: String::from("somebucket"),
+        //    attributes_as: AttributeAs::Field,
+        //    attributes_as_tags: None,
+        //    attributes_as_fields: None,
+        //};
+            //ctx.metrics().register(Metric{
+            //    name: String::from("some_metric"),
+            //    description: String::from("some metric"),
+            //    value_type: WrappedMeasurementType::U64,
+            //    unit: PrefixedUnit::nano(Unit::Second),
+
+            //});
+            //println!("Generating MeasurementBuffer...");
+            //let buffer = MeasurementBuffer::new();
+            //let my_metric alumet.create_metric(
+            //    "some_metric",
+            //    Unit::Unity,
+            //    "some dumb metric",
+            //)?,
+            //buffer.push(new_point("2025-02-10T13:19:00Z", WrappedMeasurementValue::U64(0), 0));
+            //test_write_mock.assert();
+            //another_mock.assert();
+        //plugins.add_plugin(PluginInfo{
+        //    metadata: PluginMetadata::from_static::<TestsPlugin>(),
+        //    enabled: true,
+        //    config: Some(testConfig),
+        //});
+        //let startup_expectations = StartupExpectations::new()
+        //    .expect_output("influxdbd", "oute");
+
