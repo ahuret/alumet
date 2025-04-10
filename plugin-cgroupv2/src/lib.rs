@@ -1,11 +1,11 @@
 mod cgroupv2;
 mod k8s;
-mod oar3;
+//mod oar3;
 
 use std::path::Path;
 
 pub use k8s::plugin::K8sPlugin;
-pub use oar3::plugin::OARPlugin;
+//pub use oar3::plugin::OARPlugin;
 
 /// Check if a specific file is a dir. Used to know if cgroup v2 are used.
 ///

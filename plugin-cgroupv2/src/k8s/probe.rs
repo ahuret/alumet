@@ -7,11 +7,11 @@ use alumet::{
 };
 use anyhow::{Context, Result};
 
-use super::utils::{gather_value, CgroupV2MetricFile};
+use super::utils::{WatchedCgroup};
 use crate::cgroupv2::{CgroupMeasurements, Metrics};
 
 pub struct K8SProbe {
-    pub cgroup_v2_metric_file: CgroupV2MetricFile,
+    pub watched_cgroup: WatchedCgroup,
     pub time_tot: CounterDiff,
     pub time_usr: CounterDiff,
     pub time_sys: CounterDiff,
@@ -26,13 +26,13 @@ pub struct K8SProbe {
 impl K8SProbe {
     pub fn new(
         metric: Metrics,
-        metric_file: CgroupV2MetricFile,
+        watched_cgroup: WatchedCgroup,
         counter_tot: CounterDiff,
         counter_sys: CounterDiff,
         counter_usr: CounterDiff,
     ) -> anyhow::Result<K8SProbe> {
         Ok(K8SProbe {
-            cgroup_v2_metric_file: metric_file,
+            watched_cgroup: watched_cgroup,
             time_tot: counter_tot,
             time_usr: counter_usr,
             time_sys: counter_sys,
@@ -55,7 +55,10 @@ impl alumet::pipeline::Source for K8SProbe {
             metric_id: TypedMetricId<u64>,
             resource_consumer: ResourceConsumer,
             value_measured: u64,
-            metrics_param: &CgroupMeasurements,
+            pod_uid: String,
+            pod_name: String,
+            namespace: String,
+            node: String,
         ) -> MeasurementPoint {
             MeasurementPoint::new(
                 timestamp,
@@ -64,14 +67,13 @@ impl alumet::pipeline::Source for K8SProbe {
                 resource_consumer,
                 value_measured,
             )
-            .with_attr("uid", AttributeValue::String(metrics_param.pod_uid.clone()))
-            .with_attr("name", AttributeValue::String(metrics_param.pod_name.clone()))
-            .with_attr("namespace", AttributeValue::String(metrics_param.namespace.clone()))
-            .with_attr("node", AttributeValue::String(metrics_param.node.clone()))
+            .with_attr("uid", AttributeValue::String(pod_uid))
+            .with_attr("name", AttributeValue::String(pod_name))
+            .with_attr("namespace", AttributeValue::String(namespace))
+            .with_attr("node", AttributeValue::String(node))
         }
 
-        let mut buffer = String::new();
-        let metrics = gather_value(&mut self.cgroup_v2_metric_file, &mut buffer)
+        let metrics = self.watched_cgroup.measurer.measure()
             .context("Error get value")
             .retry_poll()?;
 
@@ -84,9 +86,12 @@ impl alumet::pipeline::Source for K8SProbe {
             let p_tot = create_measurement_point(
                 timestamp,
                 self.cpu_time_delta,
-                self.cgroup_v2_metric_file.consumer_cpu.clone(),
+                self.watched_cgroup.measurer.cpu_stats_consumer.clone(),
                 value_tot,
-                &metrics,
+                self.watched_cgroup.uid.clone(),
+                self.watched_cgroup.name.clone(),
+                self.watched_cgroup.namespace.clone(),
+                self.watched_cgroup.node.clone(),
             )
             .with_attr("kind", "total");
             measurements.push(p_tot);
@@ -97,9 +102,12 @@ impl alumet::pipeline::Source for K8SProbe {
             let p_usr = create_measurement_point(
                 timestamp,
                 self.cpu_time_delta,
-                self.cgroup_v2_metric_file.consumer_cpu.clone(),
+                self.watched_cgroup.measurer.cpu_stats_consumer.clone(),
                 value_usr,
-                &metrics,
+                self.watched_cgroup.uid.clone(),
+                self.watched_cgroup.name.clone(),
+                self.watched_cgroup.namespace.clone(),
+                self.watched_cgroup.node.clone(),
             )
             .with_attr("kind", "user");
             measurements.push(p_usr);
@@ -110,9 +118,12 @@ impl alumet::pipeline::Source for K8SProbe {
             let p_sys = create_measurement_point(
                 timestamp,
                 self.cpu_time_delta,
-                self.cgroup_v2_metric_file.consumer_cpu.clone(),
+                self.watched_cgroup.measurer.cpu_stats_consumer.clone(),
                 value_sys,
-                &metrics,
+                self.watched_cgroup.uid.clone(),
+                self.watched_cgroup.name.clone(),
+                self.watched_cgroup.namespace.clone(),
+                self.watched_cgroup.node.clone(),
             )
             .with_attr("kind", "system");
             measurements.push(p_sys);
@@ -123,9 +134,12 @@ impl alumet::pipeline::Source for K8SProbe {
         let m_anon = create_measurement_point(
             timestamp,
             self.memory_anon,
-            self.cgroup_v2_metric_file.consumer_memory.clone(),
+            self.watched_cgroup.measurer.memory_stats_consumer.clone(),
             mem_anon_value,
-            &metrics,
+                self.watched_cgroup.uid.clone(),
+                self.watched_cgroup.name.clone(),
+                self.watched_cgroup.namespace.clone(),
+                self.watched_cgroup.node.clone(),
         );
         measurements.push(m_anon);
 
@@ -134,9 +148,12 @@ impl alumet::pipeline::Source for K8SProbe {
         let m_file = create_measurement_point(
             timestamp,
             self.memory_file,
-            self.cgroup_v2_metric_file.consumer_memory.clone(),
+            self.watched_cgroup.measurer.memory_stats_consumer.clone(),
             mem_file_value,
-            &metrics,
+                self.watched_cgroup.uid.clone(),
+                self.watched_cgroup.name.clone(),
+                self.watched_cgroup.namespace.clone(),
+                self.watched_cgroup.node.clone(),
         );
         measurements.push(m_file);
 
@@ -145,9 +162,12 @@ impl alumet::pipeline::Source for K8SProbe {
         let m_ker = create_measurement_point(
             timestamp,
             self.memory_kernel,
-            self.cgroup_v2_metric_file.consumer_memory.clone(),
+            self.watched_cgroup.measurer.memory_stats_consumer.clone(),
             mem_kernel_value,
-            &metrics,
+                self.watched_cgroup.uid.clone(),
+                self.watched_cgroup.name.clone(),
+                self.watched_cgroup.namespace.clone(),
+                self.watched_cgroup.node.clone(),
         );
         measurements.push(m_ker);
 
@@ -156,9 +176,12 @@ impl alumet::pipeline::Source for K8SProbe {
         let m_pgt = create_measurement_point(
             timestamp,
             self.memory_pagetables,
-            self.cgroup_v2_metric_file.consumer_memory.clone(),
+            self.watched_cgroup.measurer.memory_stats_consumer.clone(),
             mem_pagetables_value,
-            &metrics,
+                self.watched_cgroup.uid.clone(),
+                self.watched_cgroup.name.clone(),
+                self.watched_cgroup.namespace.clone(),
+                self.watched_cgroup.node.clone(),
         );
         measurements.push(m_pgt);
 
@@ -167,9 +190,12 @@ impl alumet::pipeline::Source for K8SProbe {
         let m_tot = create_measurement_point(
             timestamp,
             self.memory_total,
-            self.cgroup_v2_metric_file.consumer_memory.clone(),
+            self.watched_cgroup.measurer.memory_stats_consumer.clone(),
             mem_total_value,
-            &metrics,
+                self.watched_cgroup.uid.clone(),
+                self.watched_cgroup.name.clone(),
+                self.watched_cgroup.namespace.clone(),
+                self.watched_cgroup.node.clone(),
         );
         measurements.push(m_tot);
 

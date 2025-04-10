@@ -13,36 +13,29 @@ use std::{
     vec,
 };
 
-use crate::cgroupv2::CgroupMeasurements;
+use crate::cgroupv2::{CgroupMeasurements, CgroupMeasurer};
 
-#[derive(Debug)]
-pub struct CgroupV2MetricFile {
+pub struct WatchedCgroup {
     /// Name of the pod.
     pub name: String,
-    /// Path to the cgroup cpu stat file.
-    pub consumer_cpu: ResourceConsumer,
-    /// Path to the cgroup memory stat file.
-    pub consumer_memory: ResourceConsumer,
-    /// Opened file descriptor for cgroup cpu stat.
-    pub file_cpu: File,
-    /// Opened file descriptor for cgroup memory stat.
-    pub file_memory: File,
     /// UID of the pod.
     pub uid: String,
     /// Namespace of the pod.
     pub namespace: String,
     /// Node of the pod.
     pub node: String,
+    /// The measurer will get related measurements from that cgroup
+    pub measurer: CgroupMeasurer,
 }
 
-/// Returns a Vector of CgroupV2MetricFile associated to pods available under a given directory.
+/// Returns a Vector of WatchedCgroup associated to pods available under a given directory.
 fn list_metric_file_in_dir(
     root_directory_path: &Path,
     hostname: &str,
     kubernetes_api_url: &str,
     token: &Token,
-) -> anyhow::Result<Vec<CgroupV2MetricFile>> {
-    let mut vec_file_metric: Vec<CgroupV2MetricFile> = Vec::new();
+) -> anyhow::Result<Vec<WatchedCgroup>> {
+    let mut vec_file_metric: Vec<WatchedCgroup> = Vec::new();
     let entries = fs::read_dir(root_directory_path)?;
     // Let's create a runtime to await async function and fill hashmap
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
@@ -51,9 +44,6 @@ fn list_metric_file_in_dir(
     // For each File in the root path
     for entry in entries {
         let path = entry?.path();
-        let mut path_cloned_cpu = path.clone();
-        let mut path_cloned_memory = path.clone();
-
         if path.is_dir() {
             let file_name = path.file_name().ok_or_else(|| anyhow::anyhow!("No file name found"))?;
             let dir_uid = file_name.to_str().context("Filename is not valid UTF-8")?;
@@ -77,9 +67,6 @@ fn list_metric_file_in_dir(
             new_prefix.push('-');
             let uid = dir_uid_mod.strip_prefix(&new_prefix).unwrap_or(dir_uid_mod);
 
-            path_cloned_cpu.push("cpu.stat");
-            path_cloned_memory.push("memory.stat");
-
             let name_to_seek_raw = uid.strip_prefix("pod").unwrap_or(uid);
             let name_to_seek = name_to_seek_raw.replace('_', "-"); // Replace _ with - to match with hashmap
 
@@ -89,38 +76,18 @@ fn list_metric_file_in_dir(
                 None => ("".to_owned(), "".to_owned(), "".to_owned()),
             };
 
-            let file_cpu = File::open(&path_cloned_cpu)
-                .with_context(|| format!("failed to open file {}", path_cloned_cpu.display()))?;
-            let file_memory = File::open(&path_cloned_memory)
-                .with_context(|| format!("failed to open file {}", path_cloned_memory.display()))?;
-
-            // CPU resource consumer for cpu.stat file in cgroup
-            let consumer_cpu = ResourceConsumer::ControlGroup {
-                path: path_cloned_cpu
-                    .to_str()
-                    .expect("Path to 'cpu.stat' must be valid UTF8")
-                    .to_string()
-                    .into(),
-            };
-            // Memory resource consumer for memory.stat file in cgroup
-            let consumer_memory = ResourceConsumer::ControlGroup {
-                path: path_cloned_memory
-                    .to_str()
-                    .expect("Path to 'memory.stat' must to be valid UTF8")
-                    .to_string()
-                    .into(),
-            };
+            let measurer = CgroupMeasurer::new(
+                name.to_owned(),
+                path.to_str().unwrap().to_string(),
+            )?;
 
             // Let's create the new metric and push it to the vector of metrics
-            vec_file_metric.push(CgroupV2MetricFile {
+            vec_file_metric.push(WatchedCgroup {
                 name: name.clone(),
-                consumer_cpu,
-                file_cpu,
-                consumer_memory,
-                file_memory,
                 uid: uid.to_owned(),
                 namespace: namespace.clone(),
                 node: node.clone(),
+                measurer: measurer,
             });
         }
     }
@@ -134,8 +101,8 @@ pub fn list_all_k8s_pods_file(
     hostname: String,
     kubernetes_api_url: String,
     token: &Token,
-) -> anyhow::Result<Vec<CgroupV2MetricFile>> {
-    let mut final_list_metric_file: Vec<CgroupV2MetricFile> = Vec::new();
+) -> anyhow::Result<Vec<WatchedCgroup>> {
+    let mut final_list_metric_file: Vec<WatchedCgroup> = Vec::new();
     if !root_directory_path.exists() {
         return Ok(final_list_metric_file);
     }
@@ -167,48 +134,6 @@ pub fn list_all_k8s_pods_file(
         final_list_metric_file.append(&mut result_vec);
     }
     Ok(final_list_metric_file)
-}
-
-/// Extracts the metrics from data files of cgroup.
-///
-/// # Arguments
-///
-/// - Get `CgroupV2MetricFile` structure parameters to use cgroup data.
-/// - `content_buffer` : Buffer where we store content of cgroup data file.
-///
-/// # Return
-///
-/// - Error if CPU or memory data file are not found.
-pub fn gather_value(file: &mut CgroupV2MetricFile, content_buffer: &mut String) -> anyhow::Result<CgroupMeasurements> {
-    content_buffer.clear();
-
-    // CPU cgroup data
-    file.file_cpu
-        .read_to_string(content_buffer)
-        .context("Unable to gather cgroup v2 CPU metrics by reading file")?;
-    if content_buffer.is_empty() {
-        return Err(anyhow::anyhow!("CPU stat file is empty for {}", file.name));
-    }
-    file.file_cpu.rewind()?;
-
-    // Memory cgroup data
-    file.file_memory
-        .read_to_string(content_buffer)
-        .context("Unable to gather cgroup v2 memory metrics by reading file")?;
-    if content_buffer.is_empty() {
-        return Err(anyhow::anyhow!("Memory stat file is empty for {}", file.name));
-    }
-    file.file_memory.rewind()?;
-
-    let mut new_metric =
-        CgroupMeasurements::from_str(content_buffer).with_context(|| format!("failed to parse {}", file.name))?;
-
-    new_metric.pod_name = file.name.clone();
-    new_metric.namespace = file.namespace.clone();
-    new_metric.pod_uid = file.uid.clone();
-    new_metric.node = file.node.clone();
-
-    Ok(new_metric)
 }
 
 /// # Returns
@@ -533,8 +458,8 @@ mod tests {
         std::fs::write(&path_cpu, "invalid_cpu_data").unwrap();
         std::fs::write(&path_memory, "invalid_memory_data").unwrap();
 
-        let file_cpu = File::open(&path_cpu).unwrap();
-        let file_memory = File::open(&path_memory).unwrap();
+        let file_cpu_stat = File::open(&path_cpu).unwrap();
+        let file_memory_stat = File::open(&path_memory).unwrap();
 
         // CPU resource consumer for cpu.stat file in cgroup
         let consumer_cpu = ResourceConsumer::ControlGroup {
@@ -553,12 +478,12 @@ mod tests {
                 .into(),
         };
 
-        let mut metric_file = CgroupV2MetricFile {
+        let mut metric_file = WatchedCgroup {
             name: "test-pod".to_string(),
             consumer_cpu,
             consumer_memory,
-            file_cpu,
-            file_memory,
+            file_cpu_stat,
+            file_memory_stat,
             uid: "test-uid".to_string(),
             namespace: "default".to_string(),
             node: "test-node".to_string(),
@@ -621,14 +546,14 @@ mod tests {
         )
         .unwrap();
 
-        let file_cpu = match File::open(&path_cpu) {
+        let file_cpu_stat = match File::open(&path_cpu) {
             Err(why) => panic!("ERROR : Couldn't open {}: {}", path_cpu.display(), why),
-            Ok(file_cpu) => file_cpu,
+            Ok(file_cpu_stat) => file_cpu_stat,
         };
 
-        let file_memory = match File::open(&path_memory) {
+        let file_memory_stat = match File::open(&path_memory) {
             Err(why) => panic!("ERROR : Couldn't open {}: {}", path_memory.display(), why),
-            Ok(file_memory) => file_memory,
+            Ok(file_memory_stat) => file_memory_stat,
         };
 
         // CPU resource consumer for cpu.stat file in cgroup
@@ -648,12 +573,12 @@ mod tests {
                 .into(),
         };
 
-        let metric_file = CgroupV2MetricFile {
+        let metric_file = WatchedCgroup {
             name: "testing_pod".to_string(),
             consumer_cpu,
-            file_cpu,
+            file_cpu_stat,
             consumer_memory,
-            file_memory,
+            file_memory_stat,
             uid: "uid_test".to_string(),
             namespace: "namespace_test".to_string(),
             node: "node_test".to_owned(),

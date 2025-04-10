@@ -2,28 +2,26 @@ use alumet::{
     metrics::{error::MetricCreationError, TypedMetricId},
     plugin::AlumetPluginStart,
     units::{PrefixedUnit, Unit},
+    resources::{ResourceConsumer},
 };
 use anyhow::{Context, Result};
-use std::str::FromStr;
+use std::{
+    fs::File,
+    io::{Read, Seek}
+};
 
 pub(crate) const CGROUP_MAX_TIME_COUNTER: u64 = u64::MAX;
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct CgroupMeasurements {
-    /// Name of a Kubernetes pod.
-    pub pod_name: String,
-    /// Unique identification of a Kubernetes pod.
-    pub pod_uid: String,
-    /// Resources isolation of a Kubernetes pod.
-    pub namespace: String,
-    /// Kubernetes pod node.
-    pub node: String,
     /// Total CPU usage time by the cgroup.
     pub cpu_time_total: u64,
     /// CPU in user mode usage time by the cgroup.
     pub cpu_time_user_mode: u64,
     /// CPU in system mode usage time by the cgroup.
     pub cpu_time_system_mode: u64,
+    /// Resident memory usage (RSS) currently used by the cgroup.
+    pub memory_usage_resident: u64,
     /// Anonymous used memory, corresponding to running process and various allocated memory.
     pub memory_anonymous: u64,
     // Files memory, corresponding to open files and descriptors.
@@ -34,43 +32,127 @@ pub struct CgroupMeasurements {
     pub memory_pagetables: u64,
 }
 
-impl FromStr for CgroupMeasurements {
-    type Err = anyhow::Error;
+pub struct CgroupMeasurer {
+    name: String,
+    cpu_stats_file: File,
+    memory_stats_file: File,
+    memory_current_file: File,
+    pub cpu_stats_consumer: ResourceConsumer,
+    pub memory_stats_consumer: ResourceConsumer,
+    pub memory_current_consumer: ResourceConsumer,
+}
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut cgroup_struc_to_ret = CgroupMeasurements {
-            pod_name: "".to_owned(),
-            pod_uid: "".to_owned(),
-            namespace: "".to_owned(),
-            node: "".to_owned(),
+impl CgroupMeasurer {
+    pub fn new(
+        name: String,
+        cgroup_path: String,
+    ) -> anyhow::Result<Self> {
+        let cpu_stats_file_path = format!("{}cpu.stats", cgroup_path.clone());
+        let memory_stats_file_path = format!("{}memory.stats", cgroup_path.clone());
+        let memory_current_file_path = format!("{}memory_current", cgroup_path.clone());
+        Ok(CgroupMeasurer{
+            name: name,
+            cpu_stats_file: File::open(&cpu_stats_file_path).with_context(|| format!("failed to open file {}", cpu_stats_file_path))?,
+            memory_stats_file: File::open(&memory_stats_file_path).with_context(|| format!("failed to open file {}", memory_stats_file_path))?,
+            memory_current_file: File::open(&memory_current_file_path).with_context(|| format!("failed to open file {}", memory_current_file_path))?,
+            cpu_stats_consumer: ResourceConsumer::ControlGroup {
+                path: cpu_stats_file_path.into(),
+            },
+            memory_stats_consumer: ResourceConsumer::ControlGroup {
+                path: memory_stats_file_path.into(),
+            },
+            memory_current_consumer: ResourceConsumer::ControlGroup {
+                path: memory_current_file_path.into(),
+            },
+        })
+    }
+
+    pub fn measure(&mut self) -> anyhow::Result<CgroupMeasurements> {
+        let mut content_buffer = String::new();
+    
+        self.cpu_stats_file
+            .read_to_string(&mut content_buffer)
+            .context("Unable to get cgroup v2 CPU metrics by reading file")?;
+    
+        if content_buffer.is_empty() {
+            return Err(anyhow::anyhow!("CPU stat file is empty for {}", self.name));
+        }
+    
+        self.cpu_stats_file.rewind()?;
+    
+        let mut cgroup_measurements = CgroupMeasurements::new();
+    
+        cgroup_measurements.load_from_cpu_stat(&mut content_buffer).with_context(|| format!("failed to load cpu stat of {}", self.name))?;
+        
+        content_buffer.clear();
+        
+        self.memory_stats_file
+            .read_to_string(&mut content_buffer)
+            .context("Unable to get cgroup v2 metrics metrics by reading file")?;
+    
+        if content_buffer.is_empty() {
+            return Err(anyhow::anyhow!("Memory stat file is empty for {}", self.name));
+        }
+    
+        self.memory_stats_file.rewind()?;
+    
+        cgroup_measurements.load_from_memory_stat(&mut content_buffer).with_context(|| format!("failed to load memory stat of {}", self.name))?;
+    
+        Ok(cgroup_measurements)
+    }
+}
+
+impl CgroupMeasurements {
+    pub fn new() -> Self {
+        CgroupMeasurements {
             cpu_time_total: 0,
             cpu_time_user_mode: 0,
             cpu_time_system_mode: 0,
+            memory_usage_resident: 0,
             memory_anonymous: 0,
             memory_file: 0,
             memory_kernel: 0,
             memory_pagetables: 0,
-        };
+        }
+    }
 
-        for line in s.lines() {
+    /// load_from_str loads the CgroupMeasurements structure from cgroupv2 "memory.stat" file
+    pub fn load_from_cpu_stat(&mut self, cpu_stat_content: &mut String) -> anyhow::Result<()> {
+        for line in cpu_stat_content.lines() {
             let parts: Vec<&str> = line.split_ascii_whitespace().collect();
             if parts.len() >= 2 {
                 let value = parts[1]
                     .parse::<u64>()
                     .with_context(|| format!("Parsing of value : {}", parts[1]))?;
                 match parts[0] {
-                    "usage_usec" => cgroup_struc_to_ret.cpu_time_total = value,
-                    "user_usec" => cgroup_struc_to_ret.cpu_time_user_mode = value,
-                    "system_usec" => cgroup_struc_to_ret.cpu_time_system_mode = value,
-                    "anon" => cgroup_struc_to_ret.memory_anonymous = value,
-                    "file" => cgroup_struc_to_ret.memory_file = value,
-                    "kernel_stack" => cgroup_struc_to_ret.memory_kernel = value,
-                    "pagetables" => cgroup_struc_to_ret.memory_pagetables = value,
+                    "usage_usec" => self.cpu_time_total = value,
+                    "user_usec" => self.cpu_time_user_mode = value,
+                    "system_usec" => self.cpu_time_system_mode = value,
                     _ => continue,
                 }
             }
         }
-        Ok(cgroup_struc_to_ret)
+        Ok(())
+    }
+
+    /// load_from_str loads the CgroupMeasurements structure from cgroupv2 "memory.stat" file
+    pub fn load_from_memory_stat(&mut self, memory_stat_content: &mut String) -> anyhow::Result<()> {
+        for line in memory_stat_content.lines() {
+            let parts: Vec<&str> = line.split_ascii_whitespace().collect();
+            if parts.len() >= 2 {
+                let value = parts[1]
+                    .parse::<u64>()
+                    .with_context(|| format!("Parsing of value : {}", parts[1]))?;
+                match parts[0] {
+                    "anon" => self.memory_anonymous = value,
+                    "file" => self.memory_file = value,
+                    "kernel_stack" => self.memory_kernel = value,
+                    "pagetables" => self.memory_pagetables = value,
+                    _ => continue,
+                }
+            }
+        }
+        Ok(())
     }
 }
 

@@ -8,7 +8,6 @@ use alumet::{
         util::CounterDiff,
         AlumetPluginStart, AlumetPostStart, ConfigTable,
     },
-    resources::ResourceConsumer,
 };
 use anyhow::{anyhow, Context};
 use gethostname::gethostname;
@@ -17,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use std::{fs::File, path::PathBuf, time::Duration};
 
 use crate::{
-    cgroupv2::{Metrics, CGROUP_MAX_TIME_COUNTER},
+    cgroupv2::{Metrics, CGROUP_MAX_TIME_COUNTER, CgroupMeasurer},
     is_accessible_dir,
     k8s::utils::get_pod_name,
 };
@@ -25,7 +24,7 @@ use crate::{
 use super::{
     probe::K8SProbe,
     token::Token,
-    utils::{self, CgroupV2MetricFile},
+    utils::{self, WatchedCgroup},
 };
 
 pub struct K8sPlugin {
@@ -97,7 +96,7 @@ impl AlumetPlugin for K8sPlugin {
             self.config.hostname = hostname;
         }
 
-        let final_list_metric_file: Vec<CgroupV2MetricFile> = utils::list_all_k8s_pods_file(
+        let final_list_metric_file: Vec<WatchedCgroup> = utils::list_all_k8s_pods_file(
             &self.config.path,
             self.config.hostname.clone(),
             self.config.kubernetes_api_url.clone(),
@@ -186,8 +185,6 @@ impl AlumetPlugin for K8sPlugin {
                                 let pod_uid = pod_uid.to_str().expect("Can't retrieve the pod uid value");
 
                                 // We open a File Descriptor to the newly created file
-                                let mut path_cpu = path.clone();
-                                let mut path_memory = path.clone();
                                 let full_name_to_seek = pod_uid.strip_suffix(".slice").unwrap_or(pod_uid);
                                 let parts: Vec<&str> = full_name_to_seek.split("pod").collect();
                                 let name_to_seek_raw = *(parts.last().unwrap_or(&full_name_to_seek));
@@ -211,40 +208,17 @@ impl AlumetPlugin for K8sPlugin {
                                     })
                                     .with_context(|| "Block on failed returned an error")?;
 
-                                path_cpu.push("cpu.stat");
-                                let file_cpu = File::open(&path_cpu)
-                                    .with_context(|| format!("failed to open file {}", path_cpu.display()))?;
+                                let measurer = CgroupMeasurer::new(
+                                    name.to_owned(),
+                                    path.to_str().unwrap().to_string(),
+                                )?;
 
-                                path_memory.push("memory.stat");
-                                let file_memory = File::open(&path_memory)
-                                    .with_context(|| format!("failed to open file {}", path_memory.display()))?;
-
-                                // CPU resource consumer for cpu.stat file in cgroup
-                                let consumer_cpu = ResourceConsumer::ControlGroup {
-                                    path: path_cpu
-                                        .to_str()
-                                        .expect("Path to 'cpu.stat' must be valid UTF8")
-                                        .to_string()
-                                        .into(),
-                                };
-                                // Memory resource consumer for memory.stat file in cgroup
-                                let consumer_memory = ResourceConsumer::ControlGroup {
-                                    path: path_memory
-                                        .to_str()
-                                        .expect("Path to 'memory.stat' must to be valid UTF8")
-                                        .to_string()
-                                        .into(),
-                                };
-
-                                let metric_file = CgroupV2MetricFile {
+                                let watched_cgroup = WatchedCgroup {
                                     name: name.to_owned(),
-                                    consumer_cpu,
-                                    file_cpu,
-                                    consumer_memory,
-                                    file_memory,
                                     uid: uid.to_owned(),
                                     namespace: namespace.to_owned(),
                                     node: node.to_owned(),
+                                    measurer: measurer,
                                 };
 
                                 let counter_tmp_tot = CounterDiff::with_max_value(CGROUP_MAX_TIME_COUNTER);
@@ -253,7 +227,7 @@ impl AlumetPlugin for K8sPlugin {
 
                                 let probe = K8SProbe::new(
                                     detector.metrics.clone(),
-                                    metric_file,
+                                    watched_cgroup,
                                     counter_tmp_tot,
                                     counter_tmp_sys,
                                     counter_tmp_usr,
