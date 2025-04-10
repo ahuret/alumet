@@ -182,7 +182,7 @@ impl CgroupMeasurements {
 
     /// load_from_str loads the CgroupMeasurements structure from cgroupv2 "memory.stat" file
     pub fn load_from_memory_current(&mut self, content: &String) -> anyhow::Result<()> {
-        self.memory_usage_resident = content.as_str().parse::<u64>().with_context(|| format!("Parsing of value : {}", content))?;
+        self.memory_usage_resident = content.as_str().parse::<u64>().with_context(|| format!("Parsing of value : '{}'", content))?;
         Ok(())
     }
 }
