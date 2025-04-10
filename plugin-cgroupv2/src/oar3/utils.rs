@@ -21,11 +21,15 @@ pub struct CgroupV2MetricFile {
     /// Path to the cgroup cpu stat file.
     pub consumer_cpu: ResourceConsumer,
     /// Path to the cgroup memory stat file.
-    pub consumer_memory: ResourceConsumer,
+    pub consumer_memory_stat: ResourceConsumer,
+    /// Path to the cgroup memory current file.
+    pub consumer_memory_current: ResourceConsumer,
     /// Opened file descriptor for cgroup cpu stat.
     pub file_cpu: File,
     /// Opened file descriptor for cgroup memory stat.
-    pub file_memory: File,
+    pub file_memory_stat: File,
+    /// Opened file descriptor for cgroup memory current.
+    pub file_memory_current: File,
 }
 
 impl CgroupV2MetricFile {
@@ -33,16 +37,20 @@ impl CgroupV2MetricFile {
     fn new(
         name: String,
         consumer_cpu: ResourceConsumer,
-        consumer_memory: ResourceConsumer,
+        consumer_memory_stat: ResourceConsumer,
+        consumer_memory_current: ResourceConsumer,
         file_cpu: File,
-        file_memory: File,
+        file_memory_stat: File,
+        file_memory_current: File,
     ) -> CgroupV2MetricFile {
         CgroupV2MetricFile {
             name,
             consumer_cpu,
-            consumer_memory,
+            consumer_memory_stat,
+            consumer_memory_current,
             file_cpu,
-            file_memory,
+            file_memory_stat,
+            file_memory_current,
         }
     }
 }
@@ -56,19 +64,24 @@ fn list_metric_file_in_dir(root_directory_path: &Path) -> anyhow::Result<Vec<Cgr
     for entry in entries {
         let path = entry?.path();
         let mut path_cloned_cpu = path.clone();
-        let mut path_cloned_memory = path.clone();
+        let mut path_cloned_memory_stat = path.clone();
+        let mut path_cloned_memory_current = path.clone();
 
         path_cloned_cpu.push("cpu.stat");
-        path_cloned_memory.push("memory.stat");
+        path_cloned_memory_stat.push("memory.stat");
+        path_cloned_memory_current.push("memory.current");
 
         if (path_cloned_cpu.exists() && path_cloned_cpu.is_file())
-            && (path_cloned_memory.exists() && path_cloned_memory.is_file())
+            && (path_cloned_memory_stat.exists() && path_cloned_memory_stat.is_file())
+            && (path_cloned_memory_current.exists() && path_cloned_memory_current.is_file())
         {
             let file_name = path.file_name().ok_or_else(|| anyhow::anyhow!("No file name found"))?;
             let file_cpu = File::open(&path_cloned_cpu)
                 .with_context(|| format!("Failed to open file {}", path_cloned_cpu.display()))?;
-            let file_memory = File::open(&path_cloned_memory)
-                .with_context(|| format!("Failed to open file {}", path_cloned_memory.display()))?;
+            let file_memory_stat = File::open(&path_cloned_memory_stat)
+                .with_context(|| format!("Failed to open file {}", path_cloned_memory_stat.display()))?;
+            let file_memory_current = File::open(&path_cloned_memory_current)
+                .with_context(|| format!("Failed to open file {}", path_cloned_memory_current.display()))?;
 
             // CPU resource consumer for cpu.stat file in cgroup
             let consumer_cpu = ResourceConsumer::ControlGroup {
@@ -78,11 +91,19 @@ fn list_metric_file_in_dir(root_directory_path: &Path) -> anyhow::Result<Vec<Cgr
                     .to_string()
                     .into(),
             };
-            // Memory resource consumer for cpu.stat file in cgroup
-            let consumer_memory = ResourceConsumer::ControlGroup {
-                path: path_cloned_memory
+            // Memory resource consumer for memory.stat file in cgroup
+            let consumer_memory_stat = ResourceConsumer::ControlGroup {
+                path: path_cloned_memory_stat
                     .to_str()
                     .expect("Path to 'memory.stat' must to be valid UTF8")
+                    .to_string()
+                    .into(),
+            };
+            // Memory resource consumer for memory.current file in cgroup
+            let consumer_memory_current = ResourceConsumer::ControlGroup {
+                path: path_cloned_memory_current
+                    .to_str()
+                    .expect("Path to 'memory.current' must to be valid UTF8")
                     .to_string()
                     .into(),
             };
@@ -91,9 +112,11 @@ fn list_metric_file_in_dir(root_directory_path: &Path) -> anyhow::Result<Vec<Cgr
             vec_file_metric.push(CgroupV2MetricFile {
                 name: file_name.to_str().context("Filename is not valid UTF-8")?.to_string(),
                 consumer_cpu,
-                consumer_memory,
+                consumer_memory_stat,
+                consumer_memory_current,
                 file_cpu,
-                file_memory,
+                file_memory_stat,
+                file_memory_current,
             });
         }
     }
@@ -149,16 +172,25 @@ pub fn gather_value(file: &mut CgroupV2MetricFile, content_buffer: &mut String) 
     file.file_cpu.rewind()?;
 
     // Memory cgroup data
-    file.file_memory
+    file.file_memory_stat
         .read_to_string(content_buffer)
-        .context("Unable to gather cgroup v2 memory metrics by reading file")?;
+        .context("Unable to gather cgroup v2 memory stat metrics by reading file")?;
     if content_buffer.is_empty() {
         return Err(anyhow::anyhow!("Memory stat file is empty for {}", file.name));
     }
-    file.file_memory.rewind()?;
+    file.file_memory_stat.rewind()?;
 
     let mut new_metric =
         CgroupMeasurements::from_str(content_buffer).with_context(|| format!("failed to parse {}", file.name))?;
+
+    // Memory current cgroup data
+    content_buffer.clear();
+    file.file_memory_current
+        .read_to_string(content_buffer)
+        .context("Unable to get cgroup v2 memory current metric by reading file")?;
+    file.file_memory_current.rewind()?;
+
+    new_metric.load_memory_current_from_str(content_buffer).with_context(|| format!("failed to parse {}", file.name))?;
 
     new_metric.pod_name = file.name.clone();
 

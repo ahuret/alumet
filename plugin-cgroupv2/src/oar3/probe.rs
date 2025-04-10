@@ -16,6 +16,7 @@ pub struct CgroupV2prob {
     pub time_usr: CounterDiff,
     pub time_sys: CounterDiff,
     pub cpu_time_delta: TypedMetricId<u64>,
+    pub memory_usage: TypedMetricId<u64>,
     pub memory_anon: TypedMetricId<u64>,
     pub memory_file: TypedMetricId<u64>,
     pub memory_kernel: TypedMetricId<u64>,
@@ -37,6 +38,7 @@ impl CgroupV2prob {
             time_usr: counter_usr,
             time_sys: counter_sys,
             cpu_time_delta: metric.cpu_time_delta,
+            memory_usage: metric.memory_usage,
             memory_anon: metric.memory_anonymous,
             memory_file: metric.memory_file,
             memory_kernel: metric.memory_kernel,
@@ -124,12 +126,23 @@ impl alumet::pipeline::Source for CgroupV2prob {
             measurements.push(p_sys);
         }
 
+        // Push resident memory usage corresponding to running process
+        let mem_usage_value = metrics.memory_usage_resident;
+        let m_usage_resident = create_measurement_point(
+            timestamp,
+            self.memory_usage,
+            self.cgroup_v2_metric_file.consumer_memory_current.clone(),
+            mem_usage_value,
+            &metrics,
+        ).with_attr("kind", "resident");
+        measurements.push(m_usage_resident);
+
         // Push anonymous used memory measure corresponding to running process and various allocated memory
         let mem_anon_value = metrics.memory_anonymous;
         let m_anon = create_measurement_point(
             timestamp,
             self.memory_anon,
-            self.cgroup_v2_metric_file.consumer_memory.clone(),
+            self.cgroup_v2_metric_file.consumer_memory_stat.clone(),
             mem_anon_value,
             &metrics,
         );
@@ -140,7 +153,7 @@ impl alumet::pipeline::Source for CgroupV2prob {
         let m_file = create_measurement_point(
             timestamp,
             self.memory_file,
-            self.cgroup_v2_metric_file.consumer_memory.clone(),
+            self.cgroup_v2_metric_file.consumer_memory_stat.clone(),
             mem_file_value,
             &metrics,
         );
@@ -151,7 +164,7 @@ impl alumet::pipeline::Source for CgroupV2prob {
         let m_ker = create_measurement_point(
             timestamp,
             self.memory_kernel,
-            self.cgroup_v2_metric_file.consumer_memory.clone(),
+            self.cgroup_v2_metric_file.consumer_memory_stat.clone(),
             mem_kernel_value,
             &metrics,
         );
@@ -162,7 +175,7 @@ impl alumet::pipeline::Source for CgroupV2prob {
         let m_pgt = create_measurement_point(
             timestamp,
             self.memory_pagetables,
-            self.cgroup_v2_metric_file.consumer_memory.clone(),
+            self.cgroup_v2_metric_file.consumer_memory_stat.clone(),
             mem_pagetables_value,
             &metrics,
         );
@@ -173,7 +186,7 @@ impl alumet::pipeline::Source for CgroupV2prob {
         let m_tot = create_measurement_point(
             timestamp,
             self.memory_total,
-            self.cgroup_v2_metric_file.consumer_memory.clone(),
+            self.cgroup_v2_metric_file.consumer_memory_stat.clone(),
             mem_total_value,
             &metrics,
         );
