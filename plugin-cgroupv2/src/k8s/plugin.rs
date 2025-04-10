@@ -96,23 +96,23 @@ impl AlumetPlugin for K8sPlugin {
             self.config.hostname = hostname;
         }
 
-        let final_list_metric_file: Vec<WatchedCgroup> = utils::list_all_k8s_pods_file(
+        let final_list_watched_cgroup: Vec<WatchedCgroup> = utils::get_pods_related_watched_cgroup(
             &self.config.path,
-            self.config.hostname.clone(),
-            self.config.kubernetes_api_url.clone(),
+            &self.config.hostname.clone(),
+            &self.config.kubernetes_api_url.clone(),
             &Token::new(self.config.token_retrieval.clone()),
         )?;
 
         // Add as a source each pod already present
-        for metric_file in final_list_metric_file {
+        for watched_cgroup in final_list_watched_cgroup {
             let counter_tmp_tot = CounterDiff::with_max_value(crate::cgroupv2::CGROUP_MAX_TIME_COUNTER);
             let counter_tmp_usr = CounterDiff::with_max_value(crate::cgroupv2::CGROUP_MAX_TIME_COUNTER);
             let counter_tmp_sys = CounterDiff::with_max_value(crate::cgroupv2::CGROUP_MAX_TIME_COUNTER);
 
-            let source_name = format!("pod:{}_{}_{}", metric_file.namespace, metric_file.name, metric_file.uid);
+            let source_name = format!("pod:{}_{}_{}", watched_cgroup.namespace, watched_cgroup.name, watched_cgroup.uid);
             let probe = K8SProbe::new(
                 self.metrics.as_ref().expect("Metrics is not available").clone(),
-                metric_file,
+                watched_cgroup,
                 counter_tmp_tot,
                 counter_tmp_sys,
                 counter_tmp_usr,

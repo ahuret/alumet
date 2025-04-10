@@ -136,7 +136,7 @@ impl alumet::pipeline::Source for K8SProbe {
         let m_usage = create_measurement_point(
             timestamp,
             self.memory_usage,
-            self.watched_cgroup.measurer.memory_stats_consumer.clone(),
+            self.watched_cgroup.measurer.memory_current_consumer.clone(),
             mem_usage_resident_value,
             self.watched_cgroup.uid.clone(),
             self.watched_cgroup.name.clone(),

@@ -29,13 +29,13 @@ pub struct WatchedCgroup {
 }
 
 /// Returns a Vector of WatchedCgroup associated to pods available under a given directory.
-fn list_metric_file_in_dir(
+pub fn get_pods_related_watched_cgroup(
     root_directory_path: &Path,
     hostname: &str,
     kubernetes_api_url: &str,
     token: &Token,
 ) -> anyhow::Result<Vec<WatchedCgroup>> {
-    let mut vec_file_metric: Vec<WatchedCgroup> = Vec::new();
+    let mut watched_cgroups: Vec<WatchedCgroup> = Vec::new();
     let entries = fs::read_dir(root_directory_path)?;
     // Let's create a runtime to await async function and fill hashmap
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
@@ -81,8 +81,8 @@ fn list_metric_file_in_dir(
                 path.to_str().unwrap().to_string(),
             )?;
 
-            // Let's create the new metric and push it to the vector of metrics
-            vec_file_metric.push(WatchedCgroup {
+            // Let's create the new watched group and push it to the vector of watched groups
+            watched_cgroups.push(WatchedCgroup {
                 name: name.clone(),
                 uid: uid.to_owned(),
                 namespace: namespace.clone(),
@@ -91,7 +91,7 @@ fn list_metric_file_in_dir(
             });
         }
     }
-    Ok(vec_file_metric)
+    Ok(watched_cgroups)
 }
 
 /// This function list all k8s pods available, using sub-directories to look in
@@ -125,7 +125,7 @@ pub fn list_all_k8s_pods_file(
     }
 
     for prefix in all_sub_dir {
-        let mut result_vec = list_metric_file_in_dir(
+        let mut result_vec = get_pods_related_watched_cgroup(
             &prefix.to_owned(),
             hostname.clone().as_str(),
             kubernetes_api_url.clone().as_str(),

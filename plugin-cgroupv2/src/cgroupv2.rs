@@ -1,4 +1,5 @@
 use alumet::{
+    measurement::{MeasurementPoint, Timestamp},
     metrics::{error::MetricCreationError, TypedMetricId},
     plugin::AlumetPluginStart,
     units::{PrefixedUnit, Unit},
@@ -24,9 +25,9 @@ pub struct CgroupMeasurements {
     pub memory_usage_resident: u64,
     /// Anonymous used memory, corresponding to running process and various allocated memory.
     pub memory_anonymous: u64,
-    // Files memory, corresponding to open files and descriptors.
+    /// Files memory, corresponding to open files and descriptors.
     pub memory_file: u64,
-    // Memory reserved for kernel operations.
+    /// Memory reserved for kernel operations.
     pub memory_kernel: u64,
     /// Memory used to manage correspondence between virtual and physical addresses.
     pub memory_pagetables: u64,
@@ -40,6 +41,8 @@ pub struct CgroupMeasurer {
     pub cpu_stats_consumer: ResourceConsumer,
     pub memory_stats_consumer: ResourceConsumer,
     pub memory_current_consumer: ResourceConsumer,
+
+    //metrics: Metrics,
 }
 
 impl CgroupMeasurer {
@@ -65,6 +68,10 @@ impl CgroupMeasurer {
                 path: memory_current_file_path.into(),
             },
         })
+    }
+
+    pub fn get_latest_measurements() -> anyhow::Result<Vec<MeasurementPoint>> {
+        Ok(Vec::new())
     }
 
     pub fn measure(&mut self) -> anyhow::Result<CgroupMeasurements> { 
