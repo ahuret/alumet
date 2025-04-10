@@ -47,9 +47,9 @@ impl CgroupMeasurer {
         name: String,
         cgroup_path: String,
     ) -> anyhow::Result<Self> {
-        let cpu_stats_file_path = format!("{}cpu.stats", cgroup_path.clone());
-        let memory_stats_file_path = format!("{}memory.stats", cgroup_path.clone());
-        let memory_current_file_path = format!("{}memory_current", cgroup_path.clone());
+        let cpu_stats_file_path = format!("{}/cpu.stats", cgroup_path.clone());
+        let memory_stats_file_path = format!("{}/memory.stats", cgroup_path.clone());
+        let memory_current_file_path = format!("{}/memory_current", cgroup_path.clone());
         Ok(CgroupMeasurer{
             name: name,
             cpu_stats_file: File::open(&cpu_stats_file_path).with_context(|| format!("failed to open file {}", cpu_stats_file_path))?,
