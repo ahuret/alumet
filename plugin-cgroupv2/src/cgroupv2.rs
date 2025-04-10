@@ -148,7 +148,7 @@ impl CgroupMeasurements {
             if parts.len() >= 2 {
                 let value = parts[1]
                     .parse::<u64>()
-                    .with_context(|| format!("Parsing of value : {}", parts[1]))?;
+                    .with_context(|| format!("Parsing of value : '{}'", parts[1]))?;
                 match parts[0] {
                     "usage_usec" => self.cpu_time_total = value,
                     "user_usec" => self.cpu_time_user_mode = value,
@@ -167,7 +167,7 @@ impl CgroupMeasurements {
             if parts.len() >= 2 {
                 let value = parts[1]
                     .parse::<u64>()
-                    .with_context(|| format!("Parsing of value : {}", parts[1]))?;
+                    .with_context(|| format!("Parsing of value : '{}'", parts[1]))?;
                 match parts[0] {
                     "anon" => self.memory_anonymous = value,
                     "file" => self.memory_file = value,
@@ -182,7 +182,7 @@ impl CgroupMeasurements {
 
     /// load_from_str loads the CgroupMeasurements structure from cgroupv2 "memory.stat" file
     pub fn load_from_memory_current(&mut self, content: &String) -> anyhow::Result<()> {
-        self.memory_usage_resident = content.as_str().parse::<u64>().with_context(|| format!("Parsing of value : '{}'", content))?;
+        self.memory_usage_resident = content.trim().parse::<u64>().with_context(|| format!("Parsing of value : '{}'", content))?;
         Ok(())
     }
 }
