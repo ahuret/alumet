@@ -15,9 +15,7 @@ pub struct K8SProbe {
     pub time_tot: CounterDiff,
     pub time_usr: CounterDiff,
     pub time_sys: CounterDiff,
-    pub cpu_time_tot: TypedMetricId<u64>,
-    pub cpu_time_user_mode: TypedMetricId<u64>,
-    pub cpu_time_system_mode: TypedMetricId<u64>,
+    pub cpu_time_delta: TypedMetricId<u64>,
     pub memory_anon: TypedMetricId<u64>,
     pub memory_file: TypedMetricId<u64>,
     pub memory_kernel: TypedMetricId<u64>,
@@ -38,9 +36,7 @@ impl K8SProbe {
             time_tot: counter_tot,
             time_usr: counter_usr,
             time_sys: counter_sys,
-            cpu_time_tot: metric.cpu_time_total,
-            cpu_time_user_mode: metric.cpu_time_user_mode,
-            cpu_time_system_mode: metric.cpu_time_system_mode,
+            cpu_time_delta: metric.cpu_time_delta,
             memory_anon: metric.memory_anonymous,
             memory_file: metric.memory_file,
             memory_kernel: metric.memory_kernel,
@@ -87,11 +83,12 @@ impl alumet::pipeline::Source for K8SProbe {
         if let Some(value_tot) = diff_tot {
             let p_tot = create_measurement_point(
                 timestamp,
-                self.cpu_time_tot,
+                self.cpu_time_delta,
                 self.cgroup_v2_metric_file.consumer_cpu.clone(),
                 value_tot,
                 &metrics,
-            );
+            )
+            .with_attr("kind", "total");
             measurements.push(p_tot);
         }
 
@@ -99,11 +96,12 @@ impl alumet::pipeline::Source for K8SProbe {
         if let Some(value_usr) = diff_usr {
             let p_usr = create_measurement_point(
                 timestamp,
-                self.cpu_time_user_mode,
+                self.cpu_time_delta,
                 self.cgroup_v2_metric_file.consumer_cpu.clone(),
                 value_usr,
                 &metrics,
-            );
+            )
+            .with_attr("kind", "user");
             measurements.push(p_usr);
         }
 
@@ -111,11 +109,12 @@ impl alumet::pipeline::Source for K8SProbe {
         if let Some(value_sys) = diff_sys {
             let p_sys = create_measurement_point(
                 timestamp,
-                self.cpu_time_system_mode,
+                self.cpu_time_delta,
                 self.cgroup_v2_metric_file.consumer_cpu.clone(),
                 value_sys,
                 &metrics,
-            );
+            )
+            .with_attr("kind", "system");
             measurements.push(p_sys);
         }
 

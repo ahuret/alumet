@@ -76,12 +76,8 @@ impl FromStr for CgroupMeasurements {
 
 #[derive(Clone, Eq, PartialEq)]
 pub struct Metrics {
-    /// Total CPU usage time by the cgroup.
-    pub cpu_time_total: TypedMetricId<u64>,
-    /// CPU in user mode usage time by the cgroup.
-    pub cpu_time_user_mode: TypedMetricId<u64>,
-    /// CPU in system mode usage time by the cgroup.
-    pub cpu_time_system_mode: TypedMetricId<u64>,
+    /// Total CPU usage time by the cgroup since last measurement
+    pub cpu_time_delta: TypedMetricId<u64>,
     /// Anonymous used memory, corresponding to running process and various allocated memory.
     pub memory_anonymous: TypedMetricId<u64>,
     /// Files memory, corresponding to open files and descriptors.
@@ -106,24 +102,11 @@ impl Metrics {
     ///
     ///  Return `MetricCreationError` when an error occur during creation a new metric.
     pub fn new(alumet: &mut AlumetPluginStart) -> Result<Self, MetricCreationError> {
-        let usec = PrefixedUnit::micro(Unit::Second);
-
         Ok(Self {
-            // CPU cgroup data
-            cpu_time_total: alumet.create_metric::<u64>(
-                "cgroup_cpu_usage_total",
-                usec.clone(),
-                "Total CPU usage time by the cgroup",
-            )?,
-            cpu_time_user_mode: alumet.create_metric::<u64>(
-                "cgroup_cpu_usage_user",
-                usec.clone(),
-                "CPU in user mode usage time by the cgroup",
-            )?,
-            cpu_time_system_mode: alumet.create_metric::<u64>(
-                "cgroup_cpu_usage_system",
-                usec.clone(),
-                "CPU in system mode usage time by the cgroup",
+            cpu_time_delta: alumet.create_metric::<u64>(
+                "cpu_time_delta",
+                PrefixedUnit::nano(Unit::Second),
+                "Total CPU usage time by the cgroup since last measurement",
             )?,
 
             // Memory cgroup data
