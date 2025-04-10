@@ -228,7 +228,9 @@ pub fn gather_value(file: &mut CgroupV2MetricFile, content_buffer: &mut String) 
         .context("Unable to get cgroup v2 memory current metric by reading file")?;
     file.file_memory_current.rewind()?;
 
-    new_metric.load_memory_current_from_str(content_buffer).with_context(|| format!("failed to parse {}", file.name))?;
+    new_metric
+        .load_memory_current_from_str(content_buffer)
+        .with_context(|| format!("failed to parse {}", file.name))?;
 
     new_metric.pod_name = file.name.clone();
     new_metric.namespace = file.namespace.clone();

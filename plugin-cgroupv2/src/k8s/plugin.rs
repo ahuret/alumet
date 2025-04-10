@@ -221,8 +221,9 @@ impl AlumetPlugin for K8sPlugin {
                                     .with_context(|| format!("failed to open file {}", path_memory_stat.display()))?;
 
                                 path_memory_current.push("memory.current");
-                                let file_memory_current = File::open(&path_memory_current)
-                                    .with_context(|| format!("failed to open file {}", path_memory_current.display()))?;
+                                let file_memory_current = File::open(&path_memory_current).with_context(|| {
+                                    format!("failed to open file {}", path_memory_current.display())
+                                })?;
 
                                 // CPU resource consumer for cpu.stat file in cgroup
                                 let consumer_cpu = ResourceConsumer::ControlGroup {

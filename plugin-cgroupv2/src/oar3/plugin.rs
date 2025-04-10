@@ -166,12 +166,14 @@ impl AlumetPlugin for OARPlugin {
                                         .with_context(|| format!("failed to open file {}", path_cpu.display()))?;
 
                                     path_memory_stat.push("memory.stat");
-                                    let file_memory_stat = File::open(&path_memory_stat)
-                                        .with_context(|| format!("failed to open file {}", path_memory_stat.display()))?;
+                                    let file_memory_stat = File::open(&path_memory_stat).with_context(|| {
+                                        format!("failed to open file {}", path_memory_stat.display())
+                                    })?;
 
                                     path_memory_current.push("memory.current");
-                                    let file_memory_current = File::open(&path_memory_current)
-                                        .with_context(|| format!("failed to open file {}", path_memory_current.display()))?;
+                                    let file_memory_current = File::open(&path_memory_current).with_context(|| {
+                                        format!("failed to open file {}", path_memory_current.display())
+                                    })?;
 
                                     let metric_file = CgroupV2MetricFile {
                                         name: pod_uid

@@ -128,7 +128,8 @@ impl alumet::pipeline::Source for K8SProbe {
             self.cgroup_v2_metric_file.consumer_memory_current.clone(),
             mem_usage_value,
             &metrics,
-        ).with_attr("kind", "resident");
+        )
+        .with_attr("kind", "resident");
         measurements.push(m_usage_resident);
 
         // Push anonymous used memory measure corresponding to running process and various allocated memory

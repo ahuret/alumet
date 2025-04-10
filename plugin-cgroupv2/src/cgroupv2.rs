@@ -38,7 +38,10 @@ pub struct CgroupMeasurements {
 
 impl CgroupMeasurements {
     pub fn load_memory_current_from_str(&mut self, s: &str) -> Result<()> {
-        self.memory_usage_resident = s.trim().parse::<u64>().with_context(|| format!("Parsing of value : '{}'", s))?;
+        self.memory_usage_resident = s
+            .trim()
+            .parse::<u64>()
+            .with_context(|| format!("Parsing of value : '{}'", s))?;
         Ok(())
     }
 }
