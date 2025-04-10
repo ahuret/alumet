@@ -24,14 +24,23 @@ pub struct CgroupMeasurements {
     pub cpu_time_user_mode: u64,
     /// CPU in system mode usage time by the cgroup.
     pub cpu_time_system_mode: u64,
+    /// Resident memory usage (RSS) currently used by the cgroup.
+    pub memory_usage_resident: u64,
     /// Anonymous used memory, corresponding to running process and various allocated memory.
     pub memory_anonymous: u64,
-    // Files memory, corresponding to open files and descriptors.
+    /// Files memory, corresponding to open files and descriptors.
     pub memory_file: u64,
-    // Memory reserved for kernel operations.
+    /// Memory reserved for kernel operations.
     pub memory_kernel: u64,
     /// Memory used to manage correspondence between virtual and physical addresses.
     pub memory_pagetables: u64,
+}
+
+impl CgroupMeasurements {
+    pub fn load_memory_current_from_str(&mut self, s: &str) -> Result<()> {
+        self.memory_usage_resident = s.trim().parse::<u64>().with_context(|| format!("Parsing of value : '{}'", s))?;
+        Ok(())
+    }
 }
 
 impl FromStr for CgroupMeasurements {
@@ -46,6 +55,7 @@ impl FromStr for CgroupMeasurements {
             cpu_time_total: 0,
             cpu_time_user_mode: 0,
             cpu_time_system_mode: 0,
+            memory_usage_resident: 0,
             memory_anonymous: 0,
             memory_file: 0,
             memory_kernel: 0,
@@ -78,6 +88,8 @@ impl FromStr for CgroupMeasurements {
 pub struct Metrics {
     /// Total CPU usage time by the cgroup since last measurement
     pub cpu_time_delta: TypedMetricId<u64>,
+    /// Memory currently used by the cgroup.
+    pub memory_usage: TypedMetricId<u64>,
     /// Anonymous used memory, corresponding to running process and various allocated memory.
     pub memory_anonymous: TypedMetricId<u64>,
     /// Files memory, corresponding to open files and descriptors.
@@ -110,6 +122,11 @@ impl Metrics {
             )?,
 
             // Memory cgroup data
+            memory_usage: alumet.create_metric::<u64>(
+                "memory_usage",
+                Unit::Byte.clone(),
+                "Memory currently used by the cgroup",
+            )?,
             memory_anonymous: alumet.create_metric::<u64>(
                 "cgroup_memory_anonymous",
                 Unit::Byte.clone(),
