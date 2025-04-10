@@ -16,6 +16,7 @@ pub struct K8SProbe {
     pub time_usr: CounterDiff,
     pub time_sys: CounterDiff,
     pub cpu_time_delta: TypedMetricId<u64>,
+    pub memory_usage: TypedMetricId<u64>,
     pub memory_anon: TypedMetricId<u64>,
     pub memory_file: TypedMetricId<u64>,
     pub memory_kernel: TypedMetricId<u64>,
@@ -37,6 +38,7 @@ impl K8SProbe {
             time_usr: counter_usr,
             time_sys: counter_sys,
             cpu_time_delta: metric.cpu_time_delta,
+            memory_usage: metric.memory_usage,
             memory_anon: metric.memory_anonymous,
             memory_file: metric.memory_file,
             memory_kernel: metric.memory_kernel,
@@ -130,16 +132,30 @@ impl alumet::pipeline::Source for K8SProbe {
         }
 
         // Push anonymous used memory measure corresponding to running process and various allocated memory
+        let mem_usage_resident_value = metrics.memory_usage_resident;
+        let m_usage = create_measurement_point(
+            timestamp,
+            self.memory_usage,
+            self.watched_cgroup.measurer.memory_stats_consumer.clone(),
+            mem_usage_resident_value,
+            self.watched_cgroup.uid.clone(),
+            self.watched_cgroup.name.clone(),
+            self.watched_cgroup.namespace.clone(),
+            self.watched_cgroup.node.clone(),
+        ).with_attr("kind", "resident");
+        measurements.push(m_usage);
+
+        // Push anonymous used memory measure corresponding to running process and various allocated memory
         let mem_anon_value = metrics.memory_anonymous;
         let m_anon = create_measurement_point(
             timestamp,
             self.memory_anon,
             self.watched_cgroup.measurer.memory_stats_consumer.clone(),
             mem_anon_value,
-                self.watched_cgroup.uid.clone(),
-                self.watched_cgroup.name.clone(),
-                self.watched_cgroup.namespace.clone(),
-                self.watched_cgroup.node.clone(),
+            self.watched_cgroup.uid.clone(),
+            self.watched_cgroup.name.clone(),
+            self.watched_cgroup.namespace.clone(),
+            self.watched_cgroup.node.clone(),
         );
         measurements.push(m_anon);
 
@@ -150,10 +166,10 @@ impl alumet::pipeline::Source for K8SProbe {
             self.memory_file,
             self.watched_cgroup.measurer.memory_stats_consumer.clone(),
             mem_file_value,
-                self.watched_cgroup.uid.clone(),
-                self.watched_cgroup.name.clone(),
-                self.watched_cgroup.namespace.clone(),
-                self.watched_cgroup.node.clone(),
+            self.watched_cgroup.uid.clone(),
+            self.watched_cgroup.name.clone(),
+            self.watched_cgroup.namespace.clone(),
+            self.watched_cgroup.node.clone(),
         );
         measurements.push(m_file);
 
@@ -164,10 +180,10 @@ impl alumet::pipeline::Source for K8SProbe {
             self.memory_kernel,
             self.watched_cgroup.measurer.memory_stats_consumer.clone(),
             mem_kernel_value,
-                self.watched_cgroup.uid.clone(),
-                self.watched_cgroup.name.clone(),
-                self.watched_cgroup.namespace.clone(),
-                self.watched_cgroup.node.clone(),
+            self.watched_cgroup.uid.clone(),
+            self.watched_cgroup.name.clone(),
+            self.watched_cgroup.namespace.clone(),
+            self.watched_cgroup.node.clone(),
         );
         measurements.push(m_ker);
 
@@ -178,10 +194,10 @@ impl alumet::pipeline::Source for K8SProbe {
             self.memory_pagetables,
             self.watched_cgroup.measurer.memory_stats_consumer.clone(),
             mem_pagetables_value,
-                self.watched_cgroup.uid.clone(),
-                self.watched_cgroup.name.clone(),
-                self.watched_cgroup.namespace.clone(),
-                self.watched_cgroup.node.clone(),
+            self.watched_cgroup.uid.clone(),
+            self.watched_cgroup.name.clone(),
+            self.watched_cgroup.namespace.clone(),
+            self.watched_cgroup.node.clone(),
         );
         measurements.push(m_pgt);
 
@@ -192,10 +208,10 @@ impl alumet::pipeline::Source for K8SProbe {
             self.memory_total,
             self.watched_cgroup.measurer.memory_stats_consumer.clone(),
             mem_total_value,
-                self.watched_cgroup.uid.clone(),
-                self.watched_cgroup.name.clone(),
-                self.watched_cgroup.namespace.clone(),
-                self.watched_cgroup.node.clone(),
+            self.watched_cgroup.uid.clone(),
+            self.watched_cgroup.name.clone(),
+            self.watched_cgroup.namespace.clone(),
+            self.watched_cgroup.node.clone(),
         );
         measurements.push(m_tot);
 

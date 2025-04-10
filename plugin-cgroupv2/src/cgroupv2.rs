@@ -67,38 +67,63 @@ impl CgroupMeasurer {
         })
     }
 
-    pub fn measure(&mut self) -> anyhow::Result<CgroupMeasurements> {
-        let mut content_buffer = String::new();
-    
-        self.cpu_stats_file
-            .read_to_string(&mut content_buffer)
-            .context("Unable to get cgroup v2 CPU metrics by reading file")?;
-    
-        if content_buffer.is_empty() {
-            return Err(anyhow::anyhow!("CPU stat file is empty for {}", self.name));
-        }
-    
-        self.cpu_stats_file.rewind()?;
-    
+    pub fn measure(&mut self) -> anyhow::Result<CgroupMeasurements> { 
         let mut cgroup_measurements = CgroupMeasurements::new();
-    
-        cgroup_measurements.load_from_cpu_stat(&mut content_buffer).with_context(|| format!("failed to load cpu stat of {}", self.name))?;
-        
-        content_buffer.clear();
-        
-        self.memory_stats_file
-            .read_to_string(&mut content_buffer)
-            .context("Unable to get cgroup v2 metrics metrics by reading file")?;
-    
-        if content_buffer.is_empty() {
-            return Err(anyhow::anyhow!("Memory stat file is empty for {}", self.name));
-        }
-    
-        self.memory_stats_file.rewind()?;
-    
-        cgroup_measurements.load_from_memory_stat(&mut content_buffer).with_context(|| format!("failed to load memory stat of {}", self.name))?;
-    
+        let mut content_buffer = String::new();
+
+        CgroupMeasurer::_measure(
+            &mut cgroup_measurements,
+            "cpu.stat".to_string(),
+            &mut self.cpu_stats_file,
+            &mut content_buffer,
+            |cgroup_measurements: &mut CgroupMeasurements, content_buffer: &mut String| -> Result<()> {
+                cgroup_measurements.load_from_cpu_stat(content_buffer)
+            },
+        )?;
+
+        CgroupMeasurer::_measure(
+            &mut cgroup_measurements,
+            "memory.stat".to_string(),
+            &mut self.memory_stats_file,
+            &mut content_buffer,
+            |cgroup_measurements: &mut CgroupMeasurements, content_buffer: &mut String| -> Result<()> {
+                cgroup_measurements.load_from_memory_stat(content_buffer)
+            },
+        )?;
+
+        CgroupMeasurer::_measure(
+            &mut cgroup_measurements,
+            "memory.current".to_string(),
+            &mut self.memory_current_file,
+            &mut content_buffer,
+            |cgroup_measurements: &mut CgroupMeasurements, content_buffer: &mut String| -> Result<()> {
+                cgroup_measurements.load_from_memory_current(content_buffer)
+            },
+        )?;
         Ok(cgroup_measurements)
+    }
+
+    fn _measure<Decoder>(
+        cgroup_measurements: &mut CgroupMeasurements,
+        name: String,
+        file: &mut File,
+        content_buffer: &mut String,
+        mut decode: Decoder
+    )-> anyhow::Result<()>
+    where
+        Decoder: FnMut(&mut CgroupMeasurements, &mut String) -> Result<()>,
+    {
+        file.rewind()?;
+        content_buffer.clear();
+        file.read_to_string(content_buffer)
+            .context(format!("unable to read {} file", name))?;
+
+        if content_buffer.is_empty() {
+            return Err(anyhow::anyhow!("{} file is empty for", name));
+        }
+
+        decode(cgroup_measurements, content_buffer)?;
+        Ok(())
     }
 }
 
@@ -117,8 +142,8 @@ impl CgroupMeasurements {
     }
 
     /// load_from_str loads the CgroupMeasurements structure from cgroupv2 "memory.stat" file
-    pub fn load_from_cpu_stat(&mut self, cpu_stat_content: &mut String) -> anyhow::Result<()> {
-        for line in cpu_stat_content.lines() {
+    pub fn load_from_cpu_stat(&mut self, content: &String) -> anyhow::Result<()> {
+        for line in content.lines() {
             let parts: Vec<&str> = line.split_ascii_whitespace().collect();
             if parts.len() >= 2 {
                 let value = parts[1]
@@ -136,8 +161,8 @@ impl CgroupMeasurements {
     }
 
     /// load_from_str loads the CgroupMeasurements structure from cgroupv2 "memory.stat" file
-    pub fn load_from_memory_stat(&mut self, memory_stat_content: &mut String) -> anyhow::Result<()> {
-        for line in memory_stat_content.lines() {
+    pub fn load_from_memory_stat(&mut self, content: &String) -> anyhow::Result<()> {
+        for line in content.lines() {
             let parts: Vec<&str> = line.split_ascii_whitespace().collect();
             if parts.len() >= 2 {
                 let value = parts[1]
@@ -154,12 +179,20 @@ impl CgroupMeasurements {
         }
         Ok(())
     }
+
+    /// load_from_str loads the CgroupMeasurements structure from cgroupv2 "memory.stat" file
+    pub fn load_from_memory_current(&mut self, content: &String) -> anyhow::Result<()> {
+        self.memory_usage_resident = content.parse::<u64>().with_context(|| format!("Parsing of value : {}", content))?;
+        Ok(())
+    }
 }
 
 #[derive(Clone, Eq, PartialEq)]
 pub struct Metrics {
     /// Total CPU usage time by the cgroup since last measurement
     pub cpu_time_delta: TypedMetricId<u64>,
+    /// memory currently used by the cgroup.
+    pub memory_usage: TypedMetricId<u64>,
     /// Anonymous used memory, corresponding to running process and various allocated memory.
     pub memory_anonymous: TypedMetricId<u64>,
     /// Files memory, corresponding to open files and descriptors.
@@ -192,6 +225,11 @@ impl Metrics {
             )?,
 
             // Memory cgroup data
+            memory_usage: alumet.create_metric::<u64>(
+                "memory_usage",
+                Unit::Byte.clone(),
+                "Memory currently used by the cgroup.",
+            )?,
             memory_anonymous: alumet.create_metric::<u64>(
                 "cgroup_memory_anonymous",
                 Unit::Byte.clone(),
