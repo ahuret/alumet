@@ -21,7 +21,6 @@ pub struct CgroupV2prob {
     pub memory_file: TypedMetricId<u64>,
     pub memory_kernel: TypedMetricId<u64>,
     pub memory_pagetables: TypedMetricId<u64>,
-    pub memory_total: TypedMetricId<u64>,
 }
 
 impl CgroupV2prob {
@@ -43,7 +42,6 @@ impl CgroupV2prob {
             memory_file: metric.memory_file,
             memory_kernel: metric.memory_kernel,
             memory_pagetables: metric.memory_pagetables,
-            memory_total: metric.memory_total,
         })
     }
 }
@@ -181,17 +179,6 @@ impl alumet::pipeline::Source for CgroupV2prob {
             &metrics,
         );
         measurements.push(m_pgt);
-
-        // Push total memory used by cgroup measure
-        let mem_total_value = mem_anon_value + mem_file_value + mem_kernel_value + mem_pagetables_value;
-        let m_tot = create_measurement_point(
-            timestamp,
-            self.memory_total,
-            self.cgroup_v2_metric_file.consumer_memory_stat.clone(),
-            mem_total_value,
-            &metrics,
-        );
-        measurements.push(m_tot);
 
         Ok(())
     }

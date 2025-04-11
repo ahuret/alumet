@@ -557,13 +557,16 @@ mod tests {
         std::fs::create_dir_all(&sub_dir).unwrap();
 
         let path_cpu = sub_dir.join("cpu.stat");
-        let path_memory = sub_dir.join("memory.stat");
+        let path_memory_stat = sub_dir.join("memory.stat");
+        let path_memory_current = sub_dir.join("memory.current");
 
         std::fs::write(&path_cpu, "invalid_cpu_data").unwrap();
-        std::fs::write(&path_memory, "invalid_memory_data").unwrap();
+        std::fs::write(&path_memory_stat, "invalid_memory_stat_data").unwrap();
+        std::fs::write(&path_memory_current, "invalid_memory_current_data").unwrap();
 
         let file_cpu = File::open(&path_cpu).unwrap();
-        let file_memory = File::open(&path_memory).unwrap();
+        let file_memory_stat = File::open(&path_memory_stat).unwrap();
+        let file_memory_current = File::open(&path_memory_current).unwrap();
 
         // CPU resource consumer for cpu.stat file in cgroup
         let consumer_cpu = ResourceConsumer::ControlGroup {
@@ -574,10 +577,18 @@ mod tests {
                 .into(),
         };
         // Memory resource consumer for memory.stat file in cgroup
-        let consumer_memory = ResourceConsumer::ControlGroup {
-            path: path_memory
+        let consumer_memory_stat = ResourceConsumer::ControlGroup {
+            path: path_memory_stat
                 .to_str()
                 .expect("Path to 'memory.stat' must to be valid UTF8")
+                .to_string()
+                .into(),
+        };
+        // Memory resource consumer for memory.current file in cgroup
+        let consumer_memory_current = ResourceConsumer::ControlGroup {
+            path: path_memory_current
+                .to_str()
+                .expect("Path to 'memory.current' must to be valid UTF8")
                 .to_string()
                 .into(),
         };
@@ -585,9 +596,11 @@ mod tests {
         let mut metric_file = CgroupV2MetricFile {
             name: "test-pod".to_string(),
             consumer_cpu,
-            consumer_memory,
+            consumer_memory_stat,
+            consumer_memory_current,
             file_cpu,
-            file_memory,
+            file_memory_stat,
+            file_memory_current,
             uid: "test-uid".to_string(),
             namespace: "default".to_string(),
             node: "test-node".to_string(),
@@ -616,7 +629,8 @@ mod tests {
         std::fs::create_dir_all(&sub_dir).unwrap();
 
         let path_cpu = sub_dir.join("cpu.stat");
-        let path_memory = sub_dir.join("memory.stat");
+        let path_memory_stat = sub_dir.join("memory.stat");
+        let path_memory_current = sub_dir.join("memory.current");
 
         std::fs::write(
             path_cpu.clone(),
@@ -633,7 +647,7 @@ mod tests {
         .unwrap();
 
         std::fs::write(
-            path_memory.clone(),
+            path_memory_stat.clone(),
             format!(
                 "
                 anon 8335557927
@@ -650,14 +664,28 @@ mod tests {
         )
         .unwrap();
 
+        std::fs::write(
+            path_memory_current.clone(),
+            format!(
+                "6112023
+                ...."
+            ),
+        )
+        .unwrap();
+
         let file_cpu = match File::open(&path_cpu) {
             Err(why) => panic!("ERROR : Couldn't open {}: {}", path_cpu.display(), why),
             Ok(file_cpu) => file_cpu,
         };
 
-        let file_memory = match File::open(&path_memory) {
-            Err(why) => panic!("ERROR : Couldn't open {}: {}", path_memory.display(), why),
-            Ok(file_memory) => file_memory,
+        let file_memory_stat = match File::open(&path_memory_stat) {
+            Err(why) => panic!("ERROR : Couldn't open {}: {}", path_memory_stat.display(), why),
+            Ok(file_memory_stat) => file_memory_stat,
+        };
+
+        let file_memory_current = match File::open(&path_memory_current) {
+            Err(why) => panic!("ERROR : Couldn't open {}: {}", path_memory_current.display(), why),
+            Ok(file_memory_current) => file_memory_current,
         };
 
         // CPU resource consumer for cpu.stat file in cgroup
@@ -669,10 +697,18 @@ mod tests {
                 .into(),
         };
         // Memory resource consumer for memory.stat file in cgroup
-        let consumer_memory = ResourceConsumer::ControlGroup {
-            path: path_memory
+        let consumer_memory_stat = ResourceConsumer::ControlGroup {
+            path: path_memory_stat
                 .to_str()
                 .expect("Path to 'memory.stat' must to be valid UTF8")
+                .to_string()
+                .into(),
+        };
+        // Memory resource consumer for memory.current file in cgroup
+        let consumer_memory_current = ResourceConsumer::ControlGroup {
+            path: path_memory_current
+                .to_str()
+                .expect("Path to 'memory.current' must to be valid UTF8")
                 .to_string()
                 .into(),
         };
@@ -681,8 +717,10 @@ mod tests {
             name: "testing_pod".to_string(),
             consumer_cpu,
             file_cpu,
-            consumer_memory,
-            file_memory,
+            consumer_memory_stat,
+            file_memory_stat,
+            consumer_memory_current,
+            file_memory_current,
             uid: "uid_test".to_string(),
             namespace: "namespace_test".to_string(),
             node: "node_test".to_owned(),
@@ -700,6 +738,7 @@ mod tests {
             cpu_time_total,
             cpu_time_user_mode,
             cpu_time_system_mode,
+            memory_usage_resident,
             memory_anonymous,
             memory_file,
             memory_kernel,
@@ -713,6 +752,7 @@ mod tests {
             assert_eq!(cpu_time_total, 8335557927);
             assert_eq!(cpu_time_user_mode, 4728882396);
             assert_eq!(cpu_time_system_mode, 3606675531);
+            assert_eq!(memory_usage_resident, 6112023);
             assert_eq!(memory_anonymous, 8335557927);
             assert_eq!(memory_file, 4728882396);
             assert_eq!(memory_kernel, 3686400);

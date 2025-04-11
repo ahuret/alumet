@@ -101,8 +101,6 @@ pub struct Metrics {
     pub memory_kernel: TypedMetricId<u64>,
     /// Memory used to manage correspondence between virtual and physical addresses.
     pub memory_pagetables: TypedMetricId<u64>,
-    /// Total memory used by cgroup.
-    pub memory_total: TypedMetricId<u64>,
 }
 
 impl Metrics {
@@ -149,11 +147,6 @@ impl Metrics {
                 "cgroup_memory_pagetables",
                 Unit::Byte.clone(),
                 "Memory used to manage correspondence between virtual and physical addresses",
-            )?,
-            memory_total: alumet.create_metric::<u64>(
-                "cgroup_memory_total",
-                Unit::Byte.clone(),
-                "Total memory used by cgroup",
             )?,
         })
     }
@@ -240,42 +233,5 @@ mod tests {
         assert_eq!(result.cpu_time_total, 0);
         assert_eq!(result.cpu_time_user_mode, 0);
         assert_eq!(result.cpu_time_system_mode, 0);
-    }
-
-    // Test for calculating `mem_total` with structure parameters
-    #[test]
-    fn test_calc_mem() {
-        let result = CgroupMeasurements {
-            pod_name: "".to_owned(),
-            pod_uid: "test_pod_uid".to_owned(),
-            namespace: "test_pod_namespace".to_owned(),
-            node: "test_pod_node".to_owned(),
-            cpu_time_total: 64,
-            cpu_time_user_mode: 16,
-            cpu_time_system_mode: 32,
-            memory_anonymous: 1024,
-            memory_file: 256,
-            memory_kernel: 4096,
-            memory_pagetables: 512,
-        };
-
-        let expected = CgroupMeasurements {
-            pod_name: "".to_owned(),
-            pod_uid: "test_pod_uid".to_owned(),
-            namespace: "test_pod_namespace".to_owned(),
-            node: "test_pod_node".to_owned(),
-            cpu_time_total: 64,
-            cpu_time_user_mode: 16,
-            cpu_time_system_mode: 32,
-            memory_anonymous: 1024,
-            memory_file: 256,
-            memory_kernel: 4096,
-            memory_pagetables: 512,
-        };
-
-        assert_eq!(result, expected);
-
-        let mem_total = result.memory_anonymous + result.memory_file + result.memory_kernel + result.memory_pagetables;
-        assert_eq!(mem_total, 5888);
     }
 }
