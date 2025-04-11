@@ -230,7 +230,8 @@ mod tests {
 
         for i in 0..4 {
             std::fs::write(sub_dir[i].join("cpu.stat"), "test_cpu").unwrap();
-            std::fs::write(sub_dir[i].join("memory.stat"), "test_memory").unwrap();
+            std::fs::write(sub_dir[i].join("memory.stat"), "test_memory_stat").unwrap();
+            std::fs::write(sub_dir[i].join("memory.current"), "test_memory_current").unwrap();
         }
 
         let list_met_file = list_metric_file_in_dir(&dir);
@@ -260,9 +261,9 @@ mod tests {
         assert!(true);
     }
 
-    // Test `gather_value` function with invalid data
+    // Test `gather_value` function with invalid memory.current data
     #[test]
-    fn test_gather_value_with_invalid_data() {
+    fn test_gather_value_with_invalid_memory_current_data() {
         let tmp = tempdir().unwrap();
         let root = tmp.path().join("test-alumet-plugin-oar/kubepods-invalid-gather.slice/");
 
@@ -280,8 +281,28 @@ mod tests {
         let path_memory_stat = sub_dir.join("memory.stat");
         let path_memory_current = sub_dir.join("memory.current");
 
-        std::fs::write(&path_cpu, "invalid_cpu_data").unwrap();
-        std::fs::write(&path_memory_stat, "invalid_memory_stat_data").unwrap();
+        std::fs::write(&path_cpu, format!(
+                "
+                usage_usec 8335557927\n
+                user_usec 4728882396\n
+                system_usec 3606675531\n
+                nr_periods 0\n
+                nr_throttled 0\n
+                throttled_usec 0"
+        )).unwrap();
+        std::fs::write(&path_memory_stat, format!(
+                "
+                anon 8335557927
+                file 4728882396
+                kernel_stack 3686400
+                pagetables 0
+                percpu 16317568
+                sock 12288
+                shmem 233824256
+                file_mapped 0
+                file_dirty 20480
+                ...."
+        )).unwrap();
         std::fs::write(&path_memory_current, "invalid_memory_current_data").unwrap();
 
         let file_cpu = File::open(&path_cpu).unwrap();
@@ -325,8 +346,123 @@ mod tests {
 
         let mut content_buffer = String::new();
         let result = gather_value(&mut metric_file, &mut content_buffer);
+        if let Ok(CgroupMeasurements {
+            pod_name,
+            cpu_time_total,
+            cpu_time_user_mode,
+            cpu_time_system_mode,
+            memory_usage_resident,
+            memory_anonymous,
+            memory_file,
+            memory_kernel,
+            memory_pagetables,
+            pod_uid: _uid,
+            namespace: _ns,
+            node: _nd,
+        }) = result
+        {
+            assert_eq!(pod_name, "test-pod".to_owned());
+            assert_eq!(cpu_time_total, 8335557927);
+            assert_eq!(cpu_time_user_mode, 4728882396);
+            assert_eq!(cpu_time_system_mode, 3606675531);
+            assert_eq!(memory_usage_resident, 0);
+            assert_eq!(memory_anonymous, 8335557927);
+            assert_eq!(memory_file, 4728882396);
+            assert_eq!(memory_kernel, 3686400);
+            assert_eq!(memory_pagetables, 0);
+        }
+    }
 
-        result.expect("gather_value get invalid data");
+    // Test `gather_value` function with invalid data
+    #[test]
+    fn test_gather_value_with_invalid_cpu_metric_stat_data() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().join("test-alumet-plugin-oar/kubepods-invalid-gather.slice/");
+
+        if root.exists() {
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+
+        let dir = root.join("kubepods-burstable.slice/");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let sub_dir = dir.join("kubepods-burstable-pod32a1942cb9a81912549c152a49b5f9b1.slice/");
+        std::fs::create_dir_all(&sub_dir).unwrap();
+
+        let path_cpu = sub_dir.join("cpu.stat");
+        let path_memory_stat = sub_dir.join("memory.stat");
+        let path_memory_current = sub_dir.join("memory.current");
+
+        std::fs::write(&path_cpu, "invalid_cpu_data").unwrap();
+        std::fs::write(&path_memory_stat, "invalid_memory_stat_data").unwrap();
+        std::fs::write(&path_memory_current, "6112023").unwrap();
+
+        let file_cpu = File::open(&path_cpu).unwrap();
+        let file_memory_stat = File::open(&path_memory_stat).unwrap();
+        let file_memory_current = File::open(&path_memory_current).unwrap();
+
+        // CPU resource consumer for cpu.stat file in cgroup
+        let consumer_cpu = ResourceConsumer::ControlGroup {
+            path: path_cpu
+                .to_str()
+                .expect("Path to 'cpu.stat' must be valid UTF8")
+                .to_string()
+                .into(),
+        };
+        // Memory resource consumer for memory.stat file in cgroup
+        let consumer_memory_stat = ResourceConsumer::ControlGroup {
+            path: path_memory_stat
+                .to_str()
+                .expect("Path to 'memory.stat' must to be valid UTF8")
+                .to_string()
+                .into(),
+        };
+        // Memory resource consumer for memory.current file in cgroup
+        let consumer_memory_current = ResourceConsumer::ControlGroup {
+            path: path_memory_current
+                .to_str()
+                .expect("Path to 'memory.current' must to be valid UTF8")
+                .to_string()
+                .into(),
+        };
+
+        let mut metric_file = CgroupV2MetricFile {
+            name: "test-pod".to_string(),
+            consumer_cpu,
+            consumer_memory_stat,
+            consumer_memory_current,
+            file_cpu,
+            file_memory_stat,
+            file_memory_current,
+        };
+
+        let mut content_buffer = String::new();
+        let result = gather_value(&mut metric_file, &mut content_buffer);
+        if let Ok(CgroupMeasurements {
+            pod_name,
+            cpu_time_total,
+            cpu_time_user_mode,
+            cpu_time_system_mode,
+            memory_usage_resident,
+            memory_anonymous,
+            memory_file,
+            memory_kernel,
+            memory_pagetables,
+            pod_uid: _uid,
+            namespace: _ns,
+            node: _nd,
+        }) = result
+        {
+            assert_eq!(pod_name, "test-pod".to_owned());
+            assert_eq!(cpu_time_total, 0);
+            assert_eq!(cpu_time_user_mode, 0);
+            assert_eq!(cpu_time_system_mode, 0);
+            assert_eq!(memory_usage_resident, 6112023);
+            assert_eq!(memory_anonymous, 0);
+            assert_eq!(memory_file, 0);
+            assert_eq!(memory_kernel, 0);
+            assert_eq!(memory_pagetables, 0);
+        }
     }
 
     // Test `gather_value` function with valid values
@@ -375,7 +511,7 @@ mod tests {
                 sock 12288
                 shmem 233824256
                 file_mapped 0
-                file_dirty 20480,
+                file_dirty 20480
                 ...."
             ),
         )
