@@ -540,7 +540,7 @@ mod tests {
 
         assert!(true);
     }
-    
+
     // Test `gather_value` function with invalid memory.current data
     #[test]
     fn test_gather_value_with_invalid_memory_current_data() {
@@ -561,7 +561,9 @@ mod tests {
         let path_memory_stat = sub_dir.join("memory.stat");
         let path_memory_current = sub_dir.join("memory.current");
 
-        std::fs::write(&path_cpu, format!(
+        std::fs::write(
+            &path_cpu,
+            format!(
                 "
                 usage_usec 8335557927\n
                 user_usec 4728882396\n
@@ -569,8 +571,12 @@ mod tests {
                 nr_periods 0\n
                 nr_throttled 0\n
                 throttled_usec 0"
-        )).unwrap();
-        std::fs::write(&path_memory_stat, format!(
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            &path_memory_stat,
+            format!(
                 "
                 anon 8335557927
                 file 4728882396
@@ -582,7 +588,9 @@ mod tests {
                 file_mapped 0
                 file_dirty 20480
                 ...."
-        )).unwrap();
+            ),
+        )
+        .unwrap();
         std::fs::write(&path_memory_current, "invalid_memory_current_data").unwrap();
 
         let file_cpu = File::open(&path_cpu).unwrap();
@@ -756,7 +764,6 @@ mod tests {
             assert_eq!(node, "node_test");
         }
     }
-
 
     // Test `gather_value` function with valid values
     #[test]
