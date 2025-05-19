@@ -56,7 +56,7 @@ impl CounterDiff {
         let res = match self.previous_value {
             Some(prev) => {
                 if new_value < prev {
-                    let diff = new_value - prev + self.max_value;
+                    let diff = self.max_value - prev + new_value + 1;
                     CounterDiffUpdate::CorrectedDifference(diff)
                 } else {
                     let diff = new_value - prev;
