@@ -19,7 +19,7 @@ use anyhow::{anyhow, Context};
 
 use super::domains::RaplDomainType;
 
-const POWERCAP_RAPL_PATH: &str = "/sys/devices/virtual/powercap/intel-rapl";
+pub const POWERCAP_RAPL_PATH: &str = "/sys/devices/virtual/powercap/intel-rapl";
 const POWER_ZONE_PREFIX: &str = "intel-rapl";
 const POWERCAP_ENERGY_UNIT: f64 = 0.000_001; // 1 microJoules
 
@@ -90,65 +90,63 @@ impl Display for PowerZone {
     }
 }
 
-fn parse_zone_name(name: &str) -> Option<RaplDomainType> {
-    match name {
-        "psys" => Some(RaplDomainType::Platform),
-        "core" => Some(RaplDomainType::PP0),
-        "uncore" => Some(RaplDomainType::PP1),
-        "dram" => Some(RaplDomainType::Dram),
-        _ if name.starts_with("package-") => Some(RaplDomainType::Package),
-        _ => None,
-    }
-}
-
-/// Recursively explore power zones from a given dir
-fn all_power_zones_from_dir(
-    dir: &Path,
-    parent_socket: Option<u32>,
-    flat: &mut Vec<PowerZone>,
-) -> anyhow::Result<Vec<PowerZone>> {
-    let mut top = Vec::new();
-    for e in fs::read_dir(dir)? {
-        let entry = e?;
-        let path = entry.path();
-        let file_name = path.file_name().unwrap().to_string_lossy();
-
-        if path.is_dir() && file_name.starts_with(POWER_ZONE_PREFIX) {
-            let name_path = path.join("name");
-            let name = fs::read_to_string(&name_path)?.trim().to_owned();
-            let socket_id = {
-                if let Some(parent_id) = parent_socket {
-                    Some(parent_id)
-                } else if let Some(id_str) = name.strip_prefix("package-") {
-                    let id: u32 = id_str
-                        .parse()
-                        .with_context(|| format!("Failed to extract package id from '{name}'"))?;
-                    Some(id)
-                } else {
-                    None
-                }
-            };
-            let domain = parse_zone_name(&name).with_context(|| format!("Unknown RAPL powercap zone {name}"))?;
-            let children = all_power_zones_from_dir(&path, socket_id, flat)?; // recursively explore
-            let zone = PowerZone {
-                name,
-                domain,
-                path,
-                children,
-                socket_id,
-            };
-            top.push(zone.clone());
-            flat.push(zone);
+/// Discovers all the RAPL power zones in the powercap sysfs.
+pub fn all_power_zones(path: &Path) -> anyhow::Result<PowerZoneHierarchy> {
+    fn parse_zone_name(name: &str) -> Option<RaplDomainType> {
+        match name {
+            "psys" => Some(RaplDomainType::Platform),
+            "core" => Some(RaplDomainType::PP0),
+            "uncore" => Some(RaplDomainType::PP1),
+            "dram" => Some(RaplDomainType::Dram),
+            _ if name.starts_with("package-") => Some(RaplDomainType::Package),
+            _ => None,
         }
     }
-    top.sort_by_key(|z| z.path.to_string_lossy().to_string());
-    Ok(top)
-}
-
-/// Discovers all the RAPL power zones in the powercap sysfs.
-pub fn all_power_zones() -> anyhow::Result<PowerZoneHierarchy> {
+    /// Recursively explore power zones from a given dir
+    fn explore_rec(
+        dir: &Path,
+        parent_socket: Option<u32>,
+        flat: &mut Vec<PowerZone>,
+    ) -> anyhow::Result<Vec<PowerZone>> {
+        let mut top = Vec::new();
+        for e in fs::read_dir(dir)? {
+            let entry = e?;
+            let path = entry.path();
+            let file_name = path.file_name().unwrap().to_string_lossy();
+    
+            if path.is_dir() && file_name.starts_with(POWER_ZONE_PREFIX) {
+                let name_path = path.join("name");
+                let name = fs::read_to_string(&name_path)?.trim().to_owned();
+                let socket_id = {
+                    if let Some(parent_id) = parent_socket {
+                        Some(parent_id)
+                    } else if let Some(id_str) = name.strip_prefix("package-") {
+                        let id: u32 = id_str
+                            .parse()
+                            .with_context(|| format!("Failed to extract package id from '{name}'"))?;
+                        Some(id)
+                    } else {
+                        None
+                    }
+                };
+                let domain = parse_zone_name(&name).with_context(|| format!("Unknown RAPL powercap zone {name}"))?;
+                let children = explore_rec(&path, socket_id, flat)?; // recursively explore
+                let zone = PowerZone {
+                    name,
+                    domain,
+                    path,
+                    children,
+                    socket_id,
+                };
+                top.push(zone.clone());
+                flat.push(zone);
+            }
+        }
+        top.sort_by_key(|z| z.path.to_string_lossy().to_string());
+        Ok(top)
+    }
     let mut flat = Vec::new();
-    let top = all_power_zones_from_dir(Path::new(POWERCAP_RAPL_PATH), None, &mut flat)
+    let top = explore_rec(path, None, &mut flat)
         .with_context(|| format!("Could not explore {POWERCAP_RAPL_PATH}. {PERMISSION_ADVICE}"))?;
     Ok(PowerZoneHierarchy { flat, top })
 }
@@ -391,8 +389,9 @@ mod tests {
         ];
 
         create_mock_layout(base_path.clone(), &entries)?;
-        let mut flat_zones = Vec::new();
-        let _ = all_power_zones_from_dir(base_path.as_path(), None, &mut flat_zones)?;
+        let power_zones = all_power_zones(base_path.as_path())?;
+        let flat_zones = power_zones.flat;
+
         let mut zone_reading_buf = Vec::with_capacity(16);
         
         let mut psys_zone = OpenedZone::from_power_zone(&flat_zones[0])?;
@@ -453,8 +452,8 @@ mod tests {
     #[test]
     fn test_opened_zone_energy_uj_read() -> anyhow::Result<()> {
         let base_path = create_valid_mock()?;
-        let mut flat_zones = Vec::new();
-        let _ = all_power_zones_from_dir(base_path.as_path(), None, &mut flat_zones)?;
+        let power_zones = all_power_zones(base_path.as_path())?;
+        let flat_zones = power_zones.flat;
         let mut zone_reading_buf = Vec::with_capacity(16);
         assert_eq!(OpenedZone::from_power_zone(&flat_zones[0])?.read_energy_uj(&mut zone_reading_buf)?, 154571208422);
         zone_reading_buf.clear();
@@ -473,8 +472,9 @@ mod tests {
         let base_path = create_valid_mock()?;
         let base_str = base_path.to_str().expect("cannot convert base_path to str");
 
-        let mut flat_zones = Vec::new();
-        let actual_top_zones = all_power_zones_from_dir(base_path.as_path(), None, &mut flat_zones)?;
+        let power_zones = all_power_zones(base_path.as_path())?;
+
+        let actual_top_zones = power_zones.top;
 
         let expected_top_zones = vec![
             PowerZone {
@@ -517,6 +517,21 @@ mod tests {
 
         assert_eq!(actual_top_zones, expected_top_zones);
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_power_zones_fmt() -> anyhow::Result<()> {
+        let base_path = create_valid_mock()?;
+        let base_str = base_path.to_str().expect("cannot convert base_path to str");
+
+        let power_zones = all_power_zones(base_path.as_path())?;
+
+        let actual_top_zones_fmt = format!("{}", power_zones.top[0]);
+        println!("{actual_top_zones_fmt}");
+        let expected_top_zones_fmt = format!("- package-0 (Package) \t\t: {base_str}/intel-rapl:0\n  - core (PP0) \t\t: {base_str}/intel-rapl:0/intel-rapl:0:0\n  - uncore (PP1) \t\t: {base_str}/intel-rapl:0/intel-rapl:0:1");
+
+        assert_eq!(actual_top_zones_fmt, expected_top_zones_fmt);
         Ok(())
     }
 }

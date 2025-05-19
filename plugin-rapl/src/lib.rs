@@ -1,4 +1,4 @@
-use std::{path::PathBuf, time::Duration};
+use std::{path::{Path, PathBuf}, time::Duration};
 
 use alumet::{
     pipeline::elements::source::{trigger, Source},
@@ -114,7 +114,7 @@ impl AlumetPlugin for RaplPlugin {
 
         // Discover RAPL domains available in perf_events and powercap. Beware, this can fail!
         let try_perf_events = perf_event::all_power_events();
-        let try_power_zones = powercap::all_power_zones();
+        let try_power_zones = powercap::all_power_zones(Path::new(powercap::POWERCAP_RAPL_PATH));
 
         let (available_domains, subset_indicator) = match (try_perf_events, try_power_zones) {
             (Ok(perf_events), Ok(power_zones)) => {
