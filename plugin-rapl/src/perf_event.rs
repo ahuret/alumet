@@ -60,6 +60,7 @@ impl PowerEvent {
 
         let result = unsafe { sys::perf_event_open(&mut attr, pid, cpu, -1, 0) };
         if result == -1 {
+            println!("OKOK");
             Err(std::io::Error::last_os_error())
         } else {
             Ok(result)

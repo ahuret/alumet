@@ -121,3 +121,7 @@ pub fn check_domains_consistency(perf_events: &[PowerEvent], power_zones: &Power
 pub(crate) fn mkstring<A: ToString>(elems: &[A], sep: &str) -> String {
     elems.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(sep)
 }
+
+#[cfg(test)]
+mod tests {
+}

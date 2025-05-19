@@ -28,6 +28,47 @@ pub struct RaplPlugin {
     config: Config,
 }
 
+//fn is_perf_event_available() -> bool {
+//    match std::path::Path::new(perf_event::PERF_SYSFS_DIR).try_exists() {
+//        Ok(true) => false,
+//        _ => false,
+//    }
+//}
+//
+//fn is_powercap_available() -> bool {
+//    match std::path::Path::new(powercap::POWERCAP_RAPL_PATH).try_exists() {
+//        Ok(true) => false,
+//        _ => false,
+//    }
+//}
+//
+//fn is_check_consistency_available(powercap_available: bool, perf_event_available: bool) -> bool {
+//    powercap_available && perf_event_available
+//}
+//
+//fn define_collect_method(use_perf_event: bool, powercap_available: bool, perf_event_available: bool) -> Result<CollectMethod> {
+//    if perf_event_available && use_perf_event {
+//        Ok(CollectMethod::PerfEvent)
+//    } else if powercap_available {
+//        Ok(CollectMethod::Powercap)
+//    } else {
+//        Err("there's no available collect_method")
+//    }
+//}
+//
+//let powercap_avaible = is_powercap_available();
+//let perf_event_available = is_perf_event_available();
+//let check_consistency = is_check_consistency_available(powercap_available, perf_event_available);
+
+//if check_consistency {
+//    let try_perf_events = perf_event::all_power_events();
+//    let try_power_zones = powercap::all_power_zones();
+//
+//    let mut safe_domains = check_domains_consistency(&perf_events, &power_zones);
+//}
+//
+//let method = define_collect_method(use_perf_event, powercap_avaible, perf_event_available);
+
 impl AlumetPlugin for RaplPlugin {
     fn name() -> &'static str {
         "rapl"
@@ -78,6 +119,7 @@ impl AlumetPlugin for RaplPlugin {
         let (available_domains, subset_indicator) = match (try_perf_events, try_power_zones) {
             (Ok(perf_events), Ok(power_zones)) => {
                 if !check_consistency {
+                    // here it assumes that powercap is alive
                     (SafeSubset::from_powercap_only(power_zones), " (from powercap)")
                 } else {
                     let mut safe_domains = check_domains_consistency(&perf_events, &power_zones);
@@ -91,7 +133,7 @@ impl AlumetPlugin for RaplPlugin {
                             safe_domains = SafeSubset::from_powercap_only(power_zones);
                             domain_origin = " (from powercap)";
                         } else if !perf_events.is_empty() && power_zones.top.is_empty() {
-                            log::warn!("perf_events returned an empty list of RAPL domains, I will disable powercap and use perf_events instead.");
+                            log::warn!("powercap returned an empty list of RAPL domains, I will disable powercap and use perf_events instead.");
                             use_powercap = false;
                             safe_domains = SafeSubset::from_perf_only(perf_events);
                             domain_origin = " (from perf_events)";
