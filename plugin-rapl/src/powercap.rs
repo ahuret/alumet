@@ -169,17 +169,34 @@ struct OpenedZone {
 }
 
 impl PowercapProbe {
-    pub fn new(metric: TypedMetricId<f64>, zones: &[PowerZone]) -> anyhow::Result<PowercapProbe> {
+    pub fn new(metric: TypedMetricId<f64>, zones: &Vec<PowerZone>) -> anyhow::Result<PowercapProbe> {
         if zones.is_empty() {
             return Err(anyhow!("At least one power zone is required for PowercapProbe"))?;
         }
 
         let mut opened = Vec::with_capacity(zones.len());
         for zone in zones {
-            opened.push(OpenedZone::from_power_zone(zone)?);
+            match OpenedZone::from_power_zone(zone) {
+                Ok(opened_zone) => opened.push(opened_zone),
+                Err(e) => {
+                    Self::handle_insufficient_privileges(&e);
+                    return Err(e)
+                },
+            }
         }
 
         Ok(PowercapProbe { metric, zones: opened })
+    }
+
+    fn handle_insufficient_privileges(e: &anyhow::Error) {
+        let msg = indoc::formatdoc!{"
+            I could not use the powercap sysfs to read RAPL energy counters: {e}.
+            This is probably caused by insufficient privileges.
+            Please check that you have read access to everything in '/sys/devices/virtual/powercap/intel-rapl'.
+        
+            A solution could be:
+                sudo chmod a+r -R /sys/devices/virtual/powercap/intel-rapl"};
+            log::error!("{msg}");
     }
 }
 

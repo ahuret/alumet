@@ -8,13 +8,13 @@ use alumet::{
 use anyhow::{Context, Result};
 use perf_event_open_sys as sys;
 use std::{
-    fs::{self, File},
+    fs::{self, DirEntry, File},
     io::{self, Read},
     os::fd::FromRawFd,
-    path::Path,
+    path::{Path, PathBuf},
 };
 
-use super::cpus::CpuId;
+use super::cpus::{self, CpuId};
 use super::domains::RaplDomainType;
 
 // See https://github.com/torvalds/linux/commit/4788e5b4b2338f85fa42a712a182d8afd65d7c58
@@ -22,6 +22,7 @@ use super::domains::RaplDomainType;
 
 pub(crate) const PERF_MAX_ENERGY: u64 = u64::MAX;
 pub(crate) const PERF_SYSFS_DIR: &str = "/sys/devices/power";
+const ADVICE: &str = "Try to set kernel.perf_event_paranoid to 0 or -1, or to give CAP_PERFMON to the application's binary (CAP_SYS_ADMIN before Linux 5.8).";
 
 #[derive(Debug, Clone)]
 pub struct PowerEvent {
@@ -60,33 +61,61 @@ impl PowerEvent {
 
         let result = unsafe { sys::perf_event_open(&mut attr, pid, cpu, -1, 0) };
         if result == -1 {
-            println!("OKOK");
             Err(std::io::Error::last_os_error())
         } else {
             Ok(result)
         }
     }
-}
 
-/// Retrieves the type of the RAPL PMU (Power Monitoring Unit) in the Linux kernel.
-pub fn pmu_type() -> Result<u32> {
-    let path = Path::new("/sys/devices/power/type");
-    let read = fs::read_to_string(path).with_context(|| format!("Failed to read {path:?}"))?;
-    let typ = read
-        .trim_end()
-        .parse()
-        .with_context(|| format!("Failed to parse {path:?}: '{read}'"))?;
-    Ok(typ)
-}
+    fn try_from_event_path(path: &PathBuf) -> anyhow::Result<Option<Self>> {
+        Ok(match Self::name_from_path(path) {
+            Some(event_name) => {
+                let name = event_name.to_owned();
+                let code = Self::read_event_code(&path)?;
+                let unit = Self::read_event_unit(&path)?;
+                let scale = Self::read_event_scale(&path)?;
+                let domain =
+                    Self::get_domain_type_from_name(&name).with_context(|| format!("Unknown RAPL perf event {name}"))?;
+                Some(PowerEvent {
+                    name,
+                    domain,
+                    code,
+                    unit,
+                    scale,
+                })
+            }
+            None => None,
+        })
+    }
 
-/// Retrieves all RAPL power events exposed in sysfs.
-/// There can be more than just `cores`, `pkg` and `dram`.
-/// For instance, there can be `gpu` and
-/// [`psys`](https://patchwork.kernel.org/project/linux-pm/patch/1458253409-13318-1-git-send-email-srinivas.pandruvada@linux.intel.com/).
-pub fn all_power_events() -> Result<Vec<PowerEvent>> {
-    const ADVICE: &str = "Try to set kernel.perf_event_paranoid to 0 or -1, or to adjust file permissions.";
+    fn is_event_path(path: &PathBuf) -> bool {
+        let file_name = path.file_name().unwrap().to_string_lossy();
+        path.is_file() && !file_name.contains('.') && file_name.strip_prefix("energy-").is_some()
+    }
 
-    let mut events: Vec<PowerEvent> = Vec::new();
+    // return None in case the path is not recognized as an event path
+    fn name_from_path(path: &PathBuf) -> Option<String> {
+        if !Self::is_event_path(path) {
+            return None;
+        }
+        // The files are named "energy-pkg", "energy-dram", ...
+        path.file_name()
+            .unwrap()
+            .to_string_lossy()
+            .strip_prefix("energy-")
+            .map(|s| s.to_owned())
+    }
+
+    fn get_domain_type_from_name(name: &str) -> Option<RaplDomainType> {
+        match name {
+            "cores" => Some(RaplDomainType::PP0),
+            "gpu" => Some(RaplDomainType::PP1),
+            "psys" => Some(RaplDomainType::Platform),
+            "pkg" => Some(RaplDomainType::Package),
+            "ram" => Some(RaplDomainType::Dram),
+            _ => None,
+        }
+    }
 
     fn read_event_code(path: &Path) -> Result<u8> {
         let read = fs::read_to_string(path).with_context(|| format!("Could not read {path:?}. {ADVICE}"))?;
@@ -115,42 +144,33 @@ pub fn all_power_events() -> Result<Vec<PowerEvent>> {
             .with_context(|| format!("Failed to parse {path:?}: '{read}'"))?;
         Ok(scale)
     }
+}
 
-    fn parse_event_name(name: &str) -> Option<RaplDomainType> {
-        match name {
-            "cores" => Some(RaplDomainType::PP0),
-            "gpu" => Some(RaplDomainType::PP1),
-            "psys" => Some(RaplDomainType::Platform),
-            "pkg" => Some(RaplDomainType::Package),
-            "ram" => Some(RaplDomainType::Dram),
-            _ => None,
-        }
-    }
+/// Retrieves the type of the RAPL PMU (Power Monitoring Unit) in the Linux kernel.
+pub fn pmu_type() -> Result<u32> {
+    let path = Path::new("/sys/devices/power/type");
+    let read = fs::read_to_string(path).with_context(|| format!("Failed to read {path:?}"))?;
+    let typ = read
+        .trim_end()
+        .parse()
+        .with_context(|| format!("Failed to parse {path:?}: '{read}'"))?;
+    Ok(typ)
+}
+
+/// Retrieves all RAPL power events exposed in sysfs.
+/// There can be more than just `cores`, `pkg` and `dram`.
+/// For instance, there can be `gpu` and
+/// [`psys`](https://patchwork.kernel.org/project/linux-pm/patch/1458253409-13318-1-git-send-email-srinivas.pandruvada@linux.intel.com/).
+pub fn all_power_events(base_path: &Path) -> Result<Vec<PowerEvent>> {
+    let mut events: Vec<PowerEvent> = Vec::new();
 
     // Find all the events
-    let power_event_dir = "/sys/devices/power/events";
-    for e in fs::read_dir(power_event_dir).with_context(|| format!("Could not read {power_event_dir}. {ADVICE}"))? {
+    let power_event_dir = base_path.join("events");
+    for e in fs::read_dir(&power_event_dir).with_context(|| format!("Could not read {}. {ADVICE}", power_event_dir.into_os_string().into_string().expect("error while converting power_event_dir to string")))? {
         let entry = e?;
         let path = entry.path();
-        let file_name = path.file_name().unwrap().to_string_lossy();
-        // only list the main file, not *.unit nor *.scale
-        if path.is_file() && !file_name.contains('.') {
-            // The files are named "energy-pkg", "energy-dram", ...
-            if let Some(event_name) = file_name.strip_prefix("energy-") {
-                // We have the name of the event, we can read all the info
-                let name = event_name.to_owned();
-                let code = read_event_code(&path)?;
-                let unit = read_event_unit(&path)?;
-                let scale = read_event_scale(&path)?;
-                let domain = parse_event_name(&name).with_context(|| format!("Unknown RAPL perf event {name}"))?;
-                events.push(PowerEvent {
-                    name,
-                    domain,
-                    code,
-                    unit,
-                    scale,
-                })
-            }
+        if let Some(power_event) = PowerEvent::try_from_event_path(&path)? {
+            events.push(power_event);
         }
     }
     Ok(events)
@@ -180,28 +200,75 @@ struct OpenedPowerEvent {
 }
 
 impl PerfEventProbe {
-    pub fn new(metric: TypedMetricId<f64>, events_on_cpus: &[(&PowerEvent, &CpuId)]) -> anyhow::Result<PerfEventProbe> {
-        const ADVICE: &str = "Try to set kernel.perf_event_paranoid to 0 or -1, or to give CAP_PERFMON to the application's binary (CAP_SYS_ADMIN before Linux 5.8).";
+    pub fn new(metric: TypedMetricId<f64>, power_events: &Vec<PowerEvent>) -> anyhow::Result<PerfEventProbe> {
+        let all_cpus = cpus::online_cpus()?;
+        let socket_cpus = cpus::cpus_to_monitor_with_perf()
+        .context("I could not determine how to use perf_events to read RAPL energy counters. The Intel RAPL PMU module may not be enabled, is your Linux kernel too old?")?;
 
-        let pmu_type = pmu_type()?;
-        let mut opened = Vec::with_capacity(events_on_cpus.len());
-        for (event, CpuId { cpu, socket }) in events_on_cpus {
-            let raw_fd = event
-                .perf_event_open(pmu_type, *cpu)
-                .with_context(|| format!("perf_event_open failed. {ADVICE}"))?;
-            let fd = unsafe { File::from_raw_fd(raw_fd) };
-            let scale = event.scale as f64;
-            let counter = CounterDiff::with_max_value(PERF_MAX_ENERGY);
-            let opened_event = OpenedPowerEvent {
-                fd,
-                scale,
-                domain: event.domain,
-                resource: event.domain.to_resource(*socket),
-                counter,
-            };
-            opened.push(opened_event)
+        let n_sockets = socket_cpus.len();
+        let n_cpu_cores = all_cpus.len();
+        log::debug!("{n_sockets}/{n_cpu_cores} monitorable CPU (cores) found: {socket_cpus:?}");
+
+        // Build the right combination of perf events.
+        let mut events_on_cpus = Vec::new();
+        for event in power_events {
+            for cpu in &socket_cpus {
+                events_on_cpus.push((event, cpu));
+            }
         }
-        Ok(PerfEventProbe { metric, events: opened })
+        log::debug!("Events to read: {events_on_cpus:?}");
+
+        match pmu_type() {
+            Ok(pmu_type) => {
+                let mut opened = Vec::with_capacity(events_on_cpus.len());
+                for (event, CpuId { cpu, socket }) in events_on_cpus {
+                    let raw_fd = event
+                        .perf_event_open(pmu_type, *cpu)
+                        .with_context(|| format!("perf_event_open failed. {ADVICE}"))?;
+                    let fd = unsafe { File::from_raw_fd(raw_fd) };
+                    let scale = event.scale as f64;
+                    let counter = CounterDiff::with_max_value(PERF_MAX_ENERGY);
+                    let opened_event = OpenedPowerEvent {
+                        fd,
+                        scale,
+                        domain: event.domain,
+                        resource: event.domain.to_resource(*socket),
+                        counter,
+                    };
+                    opened.push(opened_event)
+                }
+                Ok(PerfEventProbe { metric, events: opened })
+            },
+            Err(e) => {
+                Self::handle_insufficient_privileges(&e);
+                Err(e)
+            },
+        }
+    }
+
+    fn handle_insufficient_privileges(e: &anyhow::Error) {
+        fn resolve_application_path() -> std::io::Result<PathBuf> {
+            std::env::current_exe()?.canonicalize()
+        }
+        let app_path = resolve_application_path()
+            .ok()
+            .and_then(|p| p.to_str().map(|s| s.to_owned()))
+            .unwrap_or(String::from("path/to/agent"));
+        let msg = indoc::formatdoc! {"
+            I could not use perf_events to read RAPL energy counters: {e}.
+            This warning is probably caused by insufficient privileges.
+            To fix this, you have 3 possibilities:
+            1. Grant the CAP_PERFMON (CAP_SYS_ADMIN on Linux < 5.8) capability to the agent binary.
+                sudo setcap cap_perfmon=ep \"{app_path}\"        
+                Note: to grant multiple capabilities to the binary, you must put all the capabilities in the same command.
+                sudo setcap \"cap_sys_nice+ep cap_perfmon=ep\" \"{app_path}\" 
+                    
+            2. Change a kernel setting to allow every process to read the perf_events.
+                sudo sysctl -w kernel.perf_event_paranoid=0
+                    
+            3. Run the agent as root (not recommanded)."};
+            log::warn!("{msg}");
+        
     }
 }
 
