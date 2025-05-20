@@ -113,7 +113,7 @@ pub fn all_power_zones(path: &Path) -> anyhow::Result<PowerZoneHierarchy> {
             let entry = e?;
             let path = entry.path();
             let file_name = path.file_name().unwrap().to_string_lossy();
-    
+
             if path.is_dir() && file_name.starts_with(POWER_ZONE_PREFIX) {
                 let name_path = path.join("name");
                 let name = fs::read_to_string(&name_path)?.trim().to_owned();
@@ -213,7 +213,6 @@ impl OpenedZone {
             resource: power_zone.domain.to_resource(socket),
             counter,
         })
-        
     }
 
     fn read_energy_uj_counter(&mut self, self_reading_buf: &mut Vec<u8>) -> anyhow::Result<Option<f64>> {
@@ -229,7 +228,7 @@ impl OpenedZone {
         };
         if let Some(value) = diff {
             let joules = (value as f64) * POWERCAP_ENERGY_UNIT;
-            return Ok(Some(joules))
+            return Ok(Some(joules));
         };
         Ok(None)
     }
@@ -268,7 +267,7 @@ impl alumet::pipeline::Source for PowercapProbe {
                         MeasurementPoint::new(timestamp, self.metric, zone.resource.clone(), consumer, joules)
                             .with_attr("domain", AttributeValue::String(zone.domain.to_string())),
                     )
-                },
+                }
                 None => (),
             }
             // clear the buffer, so that we can fill it again
@@ -285,20 +284,20 @@ mod tests {
     use std::fs::{self, File};
     use std::io::Write;
     use std::path::{Path, PathBuf};
-    use tempfile::{Builder, tempdir};
+    use tempfile::{tempdir, Builder};
 
     /// Entry to be created in the mock filesystem
     pub enum EntryType<'a> {
         File(&'a str), // File with content
         Dir,           // Directory
     }
-    
+
     /// Single entry specification
     pub struct Entry<'a> {
         pub path: &'a str,
         pub entry_type: EntryType<'a>,
     }
-    
+
     /// Create all specified entries under the given base path
     pub fn create_mock_layout(base_path: PathBuf, entries: &[Entry]) -> std::io::Result<()> {
         for entry in entries {
@@ -320,35 +319,96 @@ mod tests {
     fn create_valid_mock() -> anyhow::Result<PathBuf> {
         // TO UNCOMMENT - DEBUG PURPOSE
         //let tmp = tempdir()?;
-        let tmp = Builder::new()
-            .disable_cleanup(true)
-            .tempdir()?;
+        let tmp = Builder::new().disable_cleanup(true).tempdir()?;
         let base_path = tmp.keep();
 
         use EntryType::*;
 
         let entries = [
-            Entry { path: "enabled", entry_type: File("1") },
-            Entry { path: "intel-rapl:0", entry_type: Dir },
-            Entry { path: "intel-rapl:0/name", entry_type: File("package-0") },
-            Entry { path: "intel-rapl:0/max_energy_range_uj", entry_type: File("262143328850") },
-            Entry { path: "intel-rapl:0/energy_uj", entry_type: File("124599532281") },
-            Entry { path: "intel-rapl:0/intel-rapl:0:0", entry_type: Dir },
-            Entry { path: "intel-rapl:0/intel-rapl:0:0/name", entry_type: File("core") },
-            Entry { path: "intel-rapl:0/intel-rapl:0:0/max_energy_range_uj", entry_type: File("262143328850") },
-            Entry { path: "intel-rapl:0/intel-rapl:0:0/energy_uj", entry_type: File("23893449269") },
-            Entry { path: "intel-rapl:0/intel-rapl:0:1", entry_type: Dir },
-            Entry { path: "intel-rapl:0/intel-rapl:0:1/name", entry_type: File("uncore") },
-            Entry { path: "intel-rapl:0/intel-rapl:0:1/max_energy_range_uj", entry_type: File("262143328850") },
-            Entry { path: "intel-rapl:0/intel-rapl:0:1/energy_uj", entry_type: File("23992349269") },
-            Entry { path: "intel-rapl:1", entry_type: Dir },
-            Entry { path: "intel-rapl:1/name", entry_type: File("psys") },
-            Entry { path: "intel-rapl:1/max_energy_range_uj", entry_type: File("262143328850") },
-            Entry { path: "intel-rapl:1/energy_uj", entry_type: File("154571208422") },
-            Entry { path: "intel-rapl:2", entry_type: Dir },
-            Entry { path: "intel-rapl:2/name", entry_type: File("dram") },
-            Entry { path: "intel-rapl:2/max_energy_range_uj", entry_type: File("262143328850") },
-            Entry { path: "intel-rapl:2/energy_uj", entry_type: File("182178908522") },
+            Entry {
+                path: "enabled",
+                entry_type: File("1"),
+            },
+            Entry {
+                path: "intel-rapl:0",
+                entry_type: Dir,
+            },
+            Entry {
+                path: "intel-rapl:0/name",
+                entry_type: File("package-0"),
+            },
+            Entry {
+                path: "intel-rapl:0/max_energy_range_uj",
+                entry_type: File("262143328850"),
+            },
+            Entry {
+                path: "intel-rapl:0/energy_uj",
+                entry_type: File("124599532281"),
+            },
+            Entry {
+                path: "intel-rapl:0/intel-rapl:0:0",
+                entry_type: Dir,
+            },
+            Entry {
+                path: "intel-rapl:0/intel-rapl:0:0/name",
+                entry_type: File("core"),
+            },
+            Entry {
+                path: "intel-rapl:0/intel-rapl:0:0/max_energy_range_uj",
+                entry_type: File("262143328850"),
+            },
+            Entry {
+                path: "intel-rapl:0/intel-rapl:0:0/energy_uj",
+                entry_type: File("23893449269"),
+            },
+            Entry {
+                path: "intel-rapl:0/intel-rapl:0:1",
+                entry_type: Dir,
+            },
+            Entry {
+                path: "intel-rapl:0/intel-rapl:0:1/name",
+                entry_type: File("uncore"),
+            },
+            Entry {
+                path: "intel-rapl:0/intel-rapl:0:1/max_energy_range_uj",
+                entry_type: File("262143328850"),
+            },
+            Entry {
+                path: "intel-rapl:0/intel-rapl:0:1/energy_uj",
+                entry_type: File("23992349269"),
+            },
+            Entry {
+                path: "intel-rapl:1",
+                entry_type: Dir,
+            },
+            Entry {
+                path: "intel-rapl:1/name",
+                entry_type: File("psys"),
+            },
+            Entry {
+                path: "intel-rapl:1/max_energy_range_uj",
+                entry_type: File("262143328850"),
+            },
+            Entry {
+                path: "intel-rapl:1/energy_uj",
+                entry_type: File("154571208422"),
+            },
+            Entry {
+                path: "intel-rapl:2",
+                entry_type: Dir,
+            },
+            Entry {
+                path: "intel-rapl:2/name",
+                entry_type: File("dram"),
+            },
+            Entry {
+                path: "intel-rapl:2/max_energy_range_uj",
+                entry_type: File("262143328850"),
+            },
+            Entry {
+                path: "intel-rapl:2/energy_uj",
+                entry_type: File("182178908522"),
+            },
         ];
 
         create_mock_layout(base_path.clone(), &entries)?;
@@ -357,35 +417,96 @@ mod tests {
 
     #[test]
     fn test_opened_zone_energy_uj_counter_read() -> anyhow::Result<()> {
-        let tmp = Builder::new()
-            .disable_cleanup(true)
-            .tempdir()?;
+        let tmp = Builder::new().disable_cleanup(true).tempdir()?;
         let base_path = tmp.keep();
 
         use EntryType::*;
 
         let entries = [
-            Entry { path: "enabled", entry_type: File("1") },
-            Entry { path: "intel-rapl:0", entry_type: Dir },
-            Entry { path: "intel-rapl:0/name", entry_type: File("package-0") },
-            Entry { path: "intel-rapl:0/max_energy_range_uj", entry_type: File("262143328850") },
-            Entry { path: "intel-rapl:0/energy_uj", entry_type: File("124599532281") },
-            Entry { path: "intel-rapl:0/intel-rapl:0:0", entry_type: Dir },
-            Entry { path: "intel-rapl:0/intel-rapl:0:0/name", entry_type: File("core") },
-            Entry { path: "intel-rapl:0/intel-rapl:0:0/max_energy_range_uj", entry_type: File("262143328850") },
-            Entry { path: "intel-rapl:0/intel-rapl:0:0/energy_uj", entry_type: File("23893449269") },
-            Entry { path: "intel-rapl:0/intel-rapl:0:1", entry_type: Dir },
-            Entry { path: "intel-rapl:0/intel-rapl:0:1/name", entry_type: File("uncore") },
-            Entry { path: "intel-rapl:0/intel-rapl:0:1/max_energy_range_uj", entry_type: File("262143328850") },
-            Entry { path: "intel-rapl:0/intel-rapl:0:1/energy_uj", entry_type: File("23992349269") },
-            Entry { path: "intel-rapl:1", entry_type: Dir },
-            Entry { path: "intel-rapl:1/name", entry_type: File("psys") },
-            Entry { path: "intel-rapl:1/max_energy_range_uj", entry_type: File("262143328850") },
-            Entry { path: "intel-rapl:1/energy_uj", entry_type: File("154571208422") },
-            Entry { path: "intel-rapl:2", entry_type: Dir },
-            Entry { path: "intel-rapl:2/name", entry_type: File("dram") },
-            Entry { path: "intel-rapl:2/max_energy_range_uj", entry_type: File("262143328850") },
-            Entry { path: "intel-rapl:2/energy_uj", entry_type: File("212143328850") },
+            Entry {
+                path: "enabled",
+                entry_type: File("1"),
+            },
+            Entry {
+                path: "intel-rapl:0",
+                entry_type: Dir,
+            },
+            Entry {
+                path: "intel-rapl:0/name",
+                entry_type: File("package-0"),
+            },
+            Entry {
+                path: "intel-rapl:0/max_energy_range_uj",
+                entry_type: File("262143328850"),
+            },
+            Entry {
+                path: "intel-rapl:0/energy_uj",
+                entry_type: File("124599532281"),
+            },
+            Entry {
+                path: "intel-rapl:0/intel-rapl:0:0",
+                entry_type: Dir,
+            },
+            Entry {
+                path: "intel-rapl:0/intel-rapl:0:0/name",
+                entry_type: File("core"),
+            },
+            Entry {
+                path: "intel-rapl:0/intel-rapl:0:0/max_energy_range_uj",
+                entry_type: File("262143328850"),
+            },
+            Entry {
+                path: "intel-rapl:0/intel-rapl:0:0/energy_uj",
+                entry_type: File("23893449269"),
+            },
+            Entry {
+                path: "intel-rapl:0/intel-rapl:0:1",
+                entry_type: Dir,
+            },
+            Entry {
+                path: "intel-rapl:0/intel-rapl:0:1/name",
+                entry_type: File("uncore"),
+            },
+            Entry {
+                path: "intel-rapl:0/intel-rapl:0:1/max_energy_range_uj",
+                entry_type: File("262143328850"),
+            },
+            Entry {
+                path: "intel-rapl:0/intel-rapl:0:1/energy_uj",
+                entry_type: File("23992349269"),
+            },
+            Entry {
+                path: "intel-rapl:1",
+                entry_type: Dir,
+            },
+            Entry {
+                path: "intel-rapl:1/name",
+                entry_type: File("psys"),
+            },
+            Entry {
+                path: "intel-rapl:1/max_energy_range_uj",
+                entry_type: File("262143328850"),
+            },
+            Entry {
+                path: "intel-rapl:1/energy_uj",
+                entry_type: File("154571208422"),
+            },
+            Entry {
+                path: "intel-rapl:2",
+                entry_type: Dir,
+            },
+            Entry {
+                path: "intel-rapl:2/name",
+                entry_type: File("dram"),
+            },
+            Entry {
+                path: "intel-rapl:2/max_energy_range_uj",
+                entry_type: File("262143328850"),
+            },
+            Entry {
+                path: "intel-rapl:2/energy_uj",
+                entry_type: File("212143328850"),
+            },
         ];
 
         create_mock_layout(base_path.clone(), &entries)?;
@@ -393,7 +514,7 @@ mod tests {
         let flat_zones = power_zones.flat;
 
         let mut zone_reading_buf = Vec::with_capacity(16);
-        
+
         let mut psys_zone = OpenedZone::from_power_zone(&flat_zones[0])?;
         let mut dram_zone = OpenedZone::from_power_zone(&flat_zones[1])?;
         let mut core_zone = OpenedZone::from_power_zone(&flat_zones[2])?;
@@ -410,27 +531,90 @@ mod tests {
         assert_eq!(package_0_zone.read_energy_uj_counter(&mut zone_reading_buf)?, None);
 
         let entries = [
-            Entry { path: "enabled", entry_type: File("1") },
-            Entry { path: "intel-rapl:0", entry_type: Dir },
-            Entry { path: "intel-rapl:0/name", entry_type: File("package-0") },
-            Entry { path: "intel-rapl:0/max_energy_range_uj", entry_type: File("262143328850") },
-            Entry { path: "intel-rapl:0/energy_uj", entry_type: File("129999532281") },
-            Entry { path: "intel-rapl:0/intel-rapl:0:0", entry_type: Dir },
-            Entry { path: "intel-rapl:0/intel-rapl:0:0/name", entry_type: File("core") },
-            Entry { path: "intel-rapl:0/intel-rapl:0:0/max_energy_range_uj", entry_type: File("262143328850") },
-            Entry { path: "intel-rapl:0/intel-rapl:0:0/energy_uj", entry_type: File("24293449269") },
-            Entry { path: "intel-rapl:0/intel-rapl:0:1", entry_type: Dir },
-            Entry { path: "intel-rapl:0/intel-rapl:0:1/name", entry_type: File("uncore") },
-            Entry { path: "intel-rapl:0/intel-rapl:0:1/max_energy_range_uj", entry_type: File("262143328850") },
-            Entry { path: "intel-rapl:0/intel-rapl:0:1/energy_uj", entry_type: File("23992349269") },
-            Entry { path: "intel-rapl:1", entry_type: Dir },
-            Entry { path: "intel-rapl:1/name", entry_type: File("psys") },
-            Entry { path: "intel-rapl:1/max_energy_range_uj", entry_type: File("262143328850") },
-            Entry { path: "intel-rapl:1/energy_uj", entry_type: File("154581208422") },
-            Entry { path: "intel-rapl:2", entry_type: Dir },
-            Entry { path: "intel-rapl:2/name", entry_type: File("dram") },
-            Entry { path: "intel-rapl:2/max_energy_range_uj", entry_type: File("262143328850") },
-            Entry { path: "intel-rapl:2/energy_uj", entry_type: File("908522") },
+            Entry {
+                path: "enabled",
+                entry_type: File("1"),
+            },
+            Entry {
+                path: "intel-rapl:0",
+                entry_type: Dir,
+            },
+            Entry {
+                path: "intel-rapl:0/name",
+                entry_type: File("package-0"),
+            },
+            Entry {
+                path: "intel-rapl:0/max_energy_range_uj",
+                entry_type: File("262143328850"),
+            },
+            Entry {
+                path: "intel-rapl:0/energy_uj",
+                entry_type: File("129999532281"),
+            },
+            Entry {
+                path: "intel-rapl:0/intel-rapl:0:0",
+                entry_type: Dir,
+            },
+            Entry {
+                path: "intel-rapl:0/intel-rapl:0:0/name",
+                entry_type: File("core"),
+            },
+            Entry {
+                path: "intel-rapl:0/intel-rapl:0:0/max_energy_range_uj",
+                entry_type: File("262143328850"),
+            },
+            Entry {
+                path: "intel-rapl:0/intel-rapl:0:0/energy_uj",
+                entry_type: File("24293449269"),
+            },
+            Entry {
+                path: "intel-rapl:0/intel-rapl:0:1",
+                entry_type: Dir,
+            },
+            Entry {
+                path: "intel-rapl:0/intel-rapl:0:1/name",
+                entry_type: File("uncore"),
+            },
+            Entry {
+                path: "intel-rapl:0/intel-rapl:0:1/max_energy_range_uj",
+                entry_type: File("262143328850"),
+            },
+            Entry {
+                path: "intel-rapl:0/intel-rapl:0:1/energy_uj",
+                entry_type: File("23992349269"),
+            },
+            Entry {
+                path: "intel-rapl:1",
+                entry_type: Dir,
+            },
+            Entry {
+                path: "intel-rapl:1/name",
+                entry_type: File("psys"),
+            },
+            Entry {
+                path: "intel-rapl:1/max_energy_range_uj",
+                entry_type: File("262143328850"),
+            },
+            Entry {
+                path: "intel-rapl:1/energy_uj",
+                entry_type: File("154581208422"),
+            },
+            Entry {
+                path: "intel-rapl:2",
+                entry_type: Dir,
+            },
+            Entry {
+                path: "intel-rapl:2/name",
+                entry_type: File("dram"),
+            },
+            Entry {
+                path: "intel-rapl:2/max_energy_range_uj",
+                entry_type: File("262143328850"),
+            },
+            Entry {
+                path: "intel-rapl:2/energy_uj",
+                entry_type: File("908522"),
+            },
         ];
 
         create_mock_layout(base_path.clone(), &entries)?;
@@ -438,13 +622,19 @@ mod tests {
         zone_reading_buf.clear();
         assert_eq!(psys_zone.read_energy_uj_counter(&mut zone_reading_buf)?, Some(10.0));
         zone_reading_buf.clear();
-        assert_eq!(dram_zone.read_energy_uj_counter(&mut zone_reading_buf)?, Some(50000.908523)); // overflow / corrected difference case
+        assert_eq!(
+            dram_zone.read_energy_uj_counter(&mut zone_reading_buf)?,
+            Some(50000.908523)
+        ); // overflow / corrected difference case
         zone_reading_buf.clear();
         assert_eq!(core_zone.read_energy_uj_counter(&mut zone_reading_buf)?, Some(400.0));
         zone_reading_buf.clear();
         assert_eq!(uncore_zone.read_energy_uj_counter(&mut zone_reading_buf)?, Some(0.0));
         zone_reading_buf.clear();
-        assert_eq!(package_0_zone.read_energy_uj_counter(&mut zone_reading_buf)?, Some(5400.0));
+        assert_eq!(
+            package_0_zone.read_energy_uj_counter(&mut zone_reading_buf)?,
+            Some(5400.0)
+        );
 
         Ok(())
     }
@@ -455,15 +645,30 @@ mod tests {
         let power_zones = all_power_zones(base_path.as_path())?;
         let flat_zones = power_zones.flat;
         let mut zone_reading_buf = Vec::with_capacity(16);
-        assert_eq!(OpenedZone::from_power_zone(&flat_zones[0])?.read_energy_uj(&mut zone_reading_buf)?, 154571208422);
+        assert_eq!(
+            OpenedZone::from_power_zone(&flat_zones[0])?.read_energy_uj(&mut zone_reading_buf)?,
+            154571208422
+        );
         zone_reading_buf.clear();
-        assert_eq!(OpenedZone::from_power_zone(&flat_zones[1])?.read_energy_uj(&mut zone_reading_buf)?, 182178908522);
+        assert_eq!(
+            OpenedZone::from_power_zone(&flat_zones[1])?.read_energy_uj(&mut zone_reading_buf)?,
+            182178908522
+        );
         zone_reading_buf.clear();
-        assert_eq!(OpenedZone::from_power_zone(&flat_zones[2])?.read_energy_uj(&mut zone_reading_buf)?, 23893449269);
+        assert_eq!(
+            OpenedZone::from_power_zone(&flat_zones[2])?.read_energy_uj(&mut zone_reading_buf)?,
+            23893449269
+        );
         zone_reading_buf.clear();
-        assert_eq!(OpenedZone::from_power_zone(&flat_zones[3])?.read_energy_uj(&mut zone_reading_buf)?, 23992349269);
+        assert_eq!(
+            OpenedZone::from_power_zone(&flat_zones[3])?.read_energy_uj(&mut zone_reading_buf)?,
+            23992349269
+        );
         zone_reading_buf.clear();
-        assert_eq!(OpenedZone::from_power_zone(&flat_zones[4])?.read_energy_uj(&mut zone_reading_buf)?, 124599532281);
+        assert_eq!(
+            OpenedZone::from_power_zone(&flat_zones[4])?.read_energy_uj(&mut zone_reading_buf)?,
+            124599532281
+        );
         Ok(())
     }
 

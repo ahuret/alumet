@@ -123,5 +123,4 @@ pub(crate) fn mkstring<A: ToString>(elems: &[A], sep: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-}
+mod tests {}

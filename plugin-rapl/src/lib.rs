@@ -1,4 +1,7 @@
-use std::{path::{Path, PathBuf}, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use alumet::{
     pipeline::elements::source::{trigger, Source},
