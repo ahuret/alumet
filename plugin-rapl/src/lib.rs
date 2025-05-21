@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     consistency::{check_domains_consistency, SafeSubset},
     perf_event::{PerfEventProbe, PowerEvent},
-    powercap::{PowercapProbe, PowerZone},
+    powercap::{PowerZone, PowercapProbe},
 };
 
 mod consistency;
@@ -116,8 +116,8 @@ impl AlumetPlugin for RaplPlugin {
         }
 
         // Discover RAPL domains available in perf_events and powercap. Beware, this can fail!
-        let try_perf_events = perf_event::all_power_events(Path::new(perf_event::PERF_SYSFS_DIR));
-        let try_power_zones = powercap::all_power_zones(Path::new(powercap::POWERCAP_RAPL_PATH));
+        let try_perf_events = perf_event::all_power_events();
+        let try_power_zones = powercap::all_power_zones();
 
         let (available_domains, subset_indicator) = match (try_perf_events, try_power_zones) {
             (Ok(perf_events), Ok(power_zones)) => {
@@ -130,12 +130,12 @@ impl AlumetPlugin for RaplPlugin {
                     if !safe_domains.is_whole {
                         // If one of the domain set is smaller, it could be empty, which would prevent the plugin from measuring anything.
                         // In that case, we fall back to the other interface, the one that reports a non-empty list of domains.
-                        if perf_events.is_empty() && !power_zones.top.is_empty() {
+                        if perf_events.is_empty() && !power_zones.is_empty() {
                             log::warn!("perf_events returned an empty list of RAPL domains, I will disable perf_events and use powercap instead.");
                             use_perf = false;
                             safe_domains = SafeSubset::from_powercap_only(power_zones);
                             domain_origin = " (from powercap)";
-                        } else if !perf_events.is_empty() && power_zones.top.is_empty() {
+                        } else if !perf_events.is_empty() && power_zones.is_empty() {
                             log::warn!("powercap returned an empty list of RAPL domains, I will disable powercap and use perf_events instead.");
                             use_powercap = false;
                             safe_domains = SafeSubset::from_perf_only(perf_events);
@@ -190,13 +190,17 @@ impl AlumetPlugin for RaplPlugin {
             }
             (true, false) => {
                 // only use perf
-                Box::new(PerfEventProbe::new(metric, &available_domains.perf_events)
-                    .context("Failed to create RAPL probe based on perf_events")?)
+                Box::new(
+                    PerfEventProbe::new(metric, &available_domains.perf_events)
+                        .context("Failed to create RAPL probe based on perf_events")?,
+                )
             }
             (false, true) => {
                 // only use powercap
-                Box::new(PowercapProbe::new(metric, &available_domains.power_zones)
-                    .context("Failed to create RAPL probe based on powercap")?)
+                Box::new(
+                    PowercapProbe::new(metric, &available_domains.power_zones)
+                        .context("Failed to create RAPL probe based on powercap")?,
+                )
             }
             (false, false) => {
                 // error: no available interface!

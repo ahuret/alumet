@@ -2,7 +2,7 @@ use crate::{
     cpus::{self, CpuVendor},
     domains::RaplDomainType,
     perf_event::PowerEvent,
-    powercap::{PowerZone, PowerZoneHierarchy},
+    powercap::PowerZone,
 };
 
 pub struct SafeSubset {
@@ -26,8 +26,7 @@ impl SafeSubset {
     }
 
     #[allow(dead_code)]
-    pub fn from_powercap_only(power_zones: PowerZoneHierarchy) -> Self {
-        let power_zones = power_zones.flat;
+    pub fn from_powercap_only(power_zones: Vec<PowerZone>) -> Self {
         let mut domains: Vec<RaplDomainType> = power_zones.iter().map(|z| z.domain).collect();
         domains.sort_by_key(|k| k.to_string());
         domains.dedup_by_key(|k| k.to_string());
@@ -42,14 +41,14 @@ impl SafeSubset {
 
 /// Checks the consistency of the RAPL domains reported by the different interfaces of the Linux kernel,
 /// and returns the list of domains that are available everywhere ("safe subset").
-pub fn check_domains_consistency(perf_events: &[PowerEvent], power_zones: &PowerZoneHierarchy) -> SafeSubset {
+pub fn check_domains_consistency(perf_events: &[PowerEvent], power_zones: &Vec<PowerZone>) -> SafeSubset {
     // get all the domains available via perf_events
     let mut perf_rapl_domains: Vec<RaplDomainType> = perf_events.iter().map(|e| e.domain).collect();
     perf_rapl_domains.sort_by_key(|k| k.to_string());
     perf_rapl_domains.dedup_by_key(|k| k.to_string());
 
     // get all the domains available via Powercap
-    let mut powercap_rapl_domains: Vec<RaplDomainType> = power_zones.flat.iter().map(|z| z.domain).collect();
+    let mut powercap_rapl_domains: Vec<RaplDomainType> = power_zones.iter().map(|z| z.domain).collect();
     powercap_rapl_domains.sort_by_key(|k| k.to_string());
     powercap_rapl_domains.dedup_by_key(|k| k.to_string());
 
@@ -96,7 +95,6 @@ pub fn check_domains_consistency(perf_events: &[PowerEvent], power_zones: &Power
             .cloned()
             .collect();
         let power_zones_subset = power_zones
-            .flat
             .iter()
             .filter(|z| domains_subset.contains(&z.domain))
             .cloned()
@@ -111,7 +109,7 @@ pub fn check_domains_consistency(perf_events: &[PowerEvent], power_zones: &Power
         SafeSubset {
             domains: perf_rapl_domains,
             perf_events: perf_events.to_owned(),
-            power_zones: power_zones.flat.to_owned(),
+            power_zones: power_zones.to_owned(),
             is_whole: true,
         }
     }

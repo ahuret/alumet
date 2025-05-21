@@ -22,8 +22,12 @@ use super::domains::RaplDomainType;
 
 pub(crate) const PERF_MAX_ENERGY: u64 = u64::MAX;
 pub(crate) const PERF_SYSFS_DIR: &str = "/sys/devices/power";
-const ADVICE: &str = "Try to set kernel.perf_event_paranoid to 0 or -1, or to give CAP_PERFMON to the application's binary (CAP_SYS_ADMIN before Linux 5.8).";
+const PERMISSION_ADVICE: &str = "Try to set kernel.perf_event_paranoid to 0 or -1, or to give CAP_PERFMON to the application's binary (CAP_SYS_ADMIN before Linux 5.8).";
 
+/// manages power events instantiations
+pub struct PowerEventFactory;
+
+/// describes power event metadata
 #[derive(Debug, Clone)]
 pub struct PowerEvent {
     /// The name of the power event, as reported by the sysfs. This corresponds to a RAPL **domain name**, like "pkg".
@@ -37,6 +41,136 @@ pub struct PowerEvent {
     /// The scale to apply in order to get joules (`energy_j = count * scale`).
     /// Should be "0x1.0p-32" (thus, f32 is fine)
     pub scale: f32,
+}
+
+/// manages power event counter collection
+struct OpenedPowerEvent {
+    fd: File,
+    scale: f64,
+    domain: RaplDomainType,
+    resource: Resource,
+    counter: CounterDiff,
+}
+
+/// Energy probe based on perf_event for intel RAPL.
+pub struct PerfEventProbe {
+    /// Id of the metric to push.
+    metric: TypedMetricId<f64>,
+    /// Ready-to-use power events with additional metadata.
+    events: Vec<OpenedPowerEvent>,
+}
+
+/// Retrieves all RAPL power events from /sys/devices/power base path.
+/// See all_power_events_from_path comments for more details
+pub fn all_power_events() -> Result<Vec<PowerEvent>> {
+    all_power_events_from_path(Path::new(PERF_SYSFS_DIR))
+}
+
+/// Retrieves all RAPL power events from a given base path (eg: /sys/devices/power)
+/// There can be more than just `cores`, `pkg` and `dram`.
+/// For instance, there can be `gpu` and
+/// [`psys`](https://patchwork.kernel.org/project/linux-pm/patch/1458253409-13318-1-git-send-email-srinivas.pandruvada@linux.intel.com/).
+fn all_power_events_from_path(base_path: &Path) -> Result<Vec<PowerEvent>> {
+    let mut events: Vec<PowerEvent> = Vec::new();
+
+    // Find all the events
+    let power_event_dir = base_path.join("events");
+    for e in fs::read_dir(&power_event_dir).context(format!(
+        "Could not read {}. {PERMISSION_ADVICE}",
+        power_event_dir
+            .into_os_string()
+            .into_string()
+            .expect("error while converting power_event_dir to string")
+    ))? {
+        let entry = e?;
+        let path = entry.path();
+        if let Some(power_event) = PowerEventFactory::from_path(&path)? {
+            events.push(power_event);
+        }
+    }
+    Ok(events)
+}
+
+impl PowerEventFactory {
+    /// creates a new PowerEvent from an event base path. In case the path is not identified as a RAPL event one, None will be returned.
+    /// (eg: /sys/devices/power/events/energy-cores)
+    pub fn from_path(base_path: &Path) -> anyhow::Result<Option<PowerEvent>> {
+        if !Self::is_event_path(base_path) {
+            return Ok(None);
+        }
+
+        let name = Self::name_from_base_path(base_path)?;
+        let code = Self::code_from_base_path(base_path)?;
+        let unit = Self::unit_from_base_path(base_path)?;
+        let scale = Self::scale_from_base_path(base_path)?;
+        let domain = Self::domain_type_from_name(&name).with_context(|| format!("Unknown RAPL perf event {name}"))?;
+
+        Ok(Some(PowerEvent {
+            name,
+            domain,
+            code,
+            unit,
+            scale,
+        }))
+    }
+
+    fn is_event_path(path: &Path) -> bool {
+        let file_name = path.file_name().unwrap().to_string_lossy();
+        path.is_file() && !file_name.contains('.') && file_name.strip_prefix("energy-").is_some()
+    }
+
+    fn name_from_base_path(path: &Path) -> Result<String> {
+        // The files are named "energy-pkg", "energy-dram", ...
+        let file_name = path
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("Path has no file name: {:?}", path))?
+            .to_string_lossy();
+
+        let name = file_name
+            .strip_prefix("energy-")
+            .ok_or_else(|| anyhow::anyhow!("File name does not start with 'energy-': {}", file_name))?;
+
+        Ok(name.to_owned())
+    }
+
+    fn domain_type_from_name(name: &str) -> Option<RaplDomainType> {
+        match name {
+            "cores" => Some(RaplDomainType::PP0),
+            "gpu" => Some(RaplDomainType::PP1),
+            "psys" => Some(RaplDomainType::Platform),
+            "pkg" => Some(RaplDomainType::Package),
+            "ram" => Some(RaplDomainType::Dram),
+            _ => None,
+        }
+    }
+
+    fn code_from_base_path(path: &Path) -> Result<u8> {
+        let read = fs::read_to_string(path).with_context(|| format!("Could not read {path:?}. {PERMISSION_ADVICE}"))?;
+        let code_str = read
+            .trim_end()
+            .strip_prefix("event=0x")
+            .with_context(|| format!("Failed to strip {path:?}: '{read}'"))?;
+        let code = u8::from_str_radix(code_str, 16).with_context(|| format!("Failed to parse {path:?}: '{read}'"))?; // hexadecimal
+        Ok(code)
+    }
+
+    fn unit_from_base_path(path: &Path) -> Result<String> {
+        let mut path = path.to_path_buf();
+        path.set_extension("unit");
+        let unit_str = fs::read_to_string(path)?.trim_end().to_string();
+        Ok(unit_str)
+    }
+
+    fn scale_from_base_path(path: &Path) -> Result<f32> {
+        let mut path = path.to_path_buf();
+        path.set_extension("scale");
+        let read = fs::read_to_string(&path)?;
+        let scale = read
+            .trim_end()
+            .parse()
+            .with_context(|| format!("Failed to parse {path:?}: '{read}'"))?;
+        Ok(scale)
+    }
 }
 
 impl PowerEvent {
@@ -67,139 +201,56 @@ impl PowerEvent {
         }
     }
 
-    fn try_from_event_path(path: &PathBuf) -> anyhow::Result<Option<Self>> {
-        Ok(match Self::name_from_path(path) {
-            Some(event_name) => {
-                let name = event_name.to_owned();
-                let code = Self::read_event_code(&path)?;
-                let unit = Self::read_event_unit(&path)?;
-                let scale = Self::read_event_scale(&path)?;
-                let domain =
-                    Self::get_domain_type_from_name(&name).with_context(|| format!("Unknown RAPL perf event {name}"))?;
-                Some(PowerEvent {
-                    name,
-                    domain,
-                    code,
-                    unit,
-                    scale,
-                })
+    /// creates a new OpenedPowerEvent from Self by opening the file using file descriptor provided by perf_event
+    fn open(&self, pmu_type: u32, cpu: u32, socket: u32) -> anyhow::Result<OpenedPowerEvent> {
+        let raw_fd = self
+            .perf_event_open(pmu_type, cpu)
+            .with_context(|| format!("perf_event_open failed. {PERMISSION_ADVICE}"))?;
+        let fd = unsafe { File::from_raw_fd(raw_fd) };
+        Ok(OpenedPowerEvent {
+            fd,
+            scale: self.scale as f64,
+            domain: self.domain,
+            resource: self.domain.to_resource(socket),
+            counter: CounterDiff::with_max_value(PERF_MAX_ENERGY),
+        })
+    }
+}
+
+impl OpenedPowerEvent {
+    fn read_counter_diff_in_joules(&mut self) -> anyhow::Result<Option<f64>> {
+        match self.read_counter_diff()? {
+            Some(diff) => Ok(Some((diff as f64) * self.scale)),
+            None => Ok(None),
+        }
+    }
+
+    fn read_counter_diff(&mut self) -> anyhow::Result<Option<u64>> {
+        let counter_value = self
+            .read_counter_value()
+            .with_context(|| format!("failed to read perf_event {:?} for domain {:?}", self.fd, self.domain))?;
+
+        // correct any overflows
+        Ok(match self.counter.update(counter_value) {
+            CounterDiffUpdate::FirstTime => None,
+            CounterDiffUpdate::Difference(diff) => Some(diff),
+            CounterDiffUpdate::CorrectedDifference(diff) => {
+                log::debug!("Overflow on perf_event counter for RAPL domain {}", self.domain);
+                Some(diff)
             }
-            None => None,
         })
     }
 
-    fn is_event_path(path: &PathBuf) -> bool {
-        let file_name = path.file_name().unwrap().to_string_lossy();
-        path.is_file() && !file_name.contains('.') && file_name.strip_prefix("energy-").is_some()
+    fn read_counter_value(&mut self) -> io::Result<u64> {
+        let mut buf = [0u8; 8];
+        // rewind() is INVALID for perf events, we must read "at the cursor" every time
+        let _ = self.fd.read(&mut buf)?;
+        Ok(u64::from_ne_bytes(buf))
     }
-
-    // return None in case the path is not recognized as an event path
-    fn name_from_path(path: &PathBuf) -> Option<String> {
-        if !Self::is_event_path(path) {
-            return None;
-        }
-        // The files are named "energy-pkg", "energy-dram", ...
-        path.file_name()
-            .unwrap()
-            .to_string_lossy()
-            .strip_prefix("energy-")
-            .map(|s| s.to_owned())
-    }
-
-    fn get_domain_type_from_name(name: &str) -> Option<RaplDomainType> {
-        match name {
-            "cores" => Some(RaplDomainType::PP0),
-            "gpu" => Some(RaplDomainType::PP1),
-            "psys" => Some(RaplDomainType::Platform),
-            "pkg" => Some(RaplDomainType::Package),
-            "ram" => Some(RaplDomainType::Dram),
-            _ => None,
-        }
-    }
-
-    fn read_event_code(path: &Path) -> Result<u8> {
-        let read = fs::read_to_string(path).with_context(|| format!("Could not read {path:?}. {ADVICE}"))?;
-        let code_str = read
-            .trim_end()
-            .strip_prefix("event=0x")
-            .with_context(|| format!("Failed to strip {path:?}: '{read}'"))?;
-        let code = u8::from_str_radix(code_str, 16).with_context(|| format!("Failed to parse {path:?}: '{read}'"))?; // hexadecimal
-        Ok(code)
-    }
-
-    fn read_event_unit(main: &Path) -> Result<String> {
-        let mut path = main.to_path_buf();
-        path.set_extension("unit");
-        let unit_str = fs::read_to_string(path)?.trim_end().to_string();
-        Ok(unit_str)
-    }
-
-    fn read_event_scale(main: &Path) -> Result<f32> {
-        let mut path = main.to_path_buf();
-        path.set_extension("scale");
-        let read = fs::read_to_string(&path)?;
-        let scale = read
-            .trim_end()
-            .parse()
-            .with_context(|| format!("Failed to parse {path:?}: '{read}'"))?;
-        Ok(scale)
-    }
-}
-
-/// Retrieves the type of the RAPL PMU (Power Monitoring Unit) in the Linux kernel.
-pub fn pmu_type() -> Result<u32> {
-    let path = Path::new("/sys/devices/power/type");
-    let read = fs::read_to_string(path).with_context(|| format!("Failed to read {path:?}"))?;
-    let typ = read
-        .trim_end()
-        .parse()
-        .with_context(|| format!("Failed to parse {path:?}: '{read}'"))?;
-    Ok(typ)
-}
-
-/// Retrieves all RAPL power events exposed in sysfs.
-/// There can be more than just `cores`, `pkg` and `dram`.
-/// For instance, there can be `gpu` and
-/// [`psys`](https://patchwork.kernel.org/project/linux-pm/patch/1458253409-13318-1-git-send-email-srinivas.pandruvada@linux.intel.com/).
-pub fn all_power_events(base_path: &Path) -> Result<Vec<PowerEvent>> {
-    let mut events: Vec<PowerEvent> = Vec::new();
-
-    // Find all the events
-    let power_event_dir = base_path.join("events");
-    for e in fs::read_dir(&power_event_dir).with_context(|| format!("Could not read {}. {ADVICE}", power_event_dir.into_os_string().into_string().expect("error while converting power_event_dir to string")))? {
-        let entry = e?;
-        let path = entry.path();
-        if let Some(power_event) = PowerEvent::try_from_event_path(&path)? {
-            events.push(power_event);
-        }
-    }
-    Ok(events)
-}
-
-fn read_perf_event(fd: &mut File) -> io::Result<u64> {
-    let mut buf = [0u8; 8];
-    // rewind() is INVALID for perf events, we must read "at the cursor" every time
-    let _ = fd.read(&mut buf)?;
-    Ok(u64::from_ne_bytes(buf))
-}
-
-/// Energy probe based on perf_event for intel RAPL.
-pub struct PerfEventProbe {
-    /// Id of the metric to push.
-    metric: TypedMetricId<f64>,
-    /// Ready-to-use power events with additional metadata.
-    events: Vec<OpenedPowerEvent>,
-}
-
-struct OpenedPowerEvent {
-    fd: File,
-    scale: f64,
-    domain: RaplDomainType,
-    resource: Resource,
-    counter: CounterDiff,
 }
 
 impl PerfEventProbe {
+    /// creates a new PerfEventProbe by passing an Alumet metric ID for energy measurement and related power events
     pub fn new(metric: TypedMetricId<f64>, power_events: &Vec<PowerEvent>) -> anyhow::Result<PerfEventProbe> {
         let all_cpus = cpus::online_cpus()?;
         let socket_cpus = cpus::cpus_to_monitor_with_perf()
@@ -222,27 +273,14 @@ impl PerfEventProbe {
             Ok(pmu_type) => {
                 let mut opened = Vec::with_capacity(events_on_cpus.len());
                 for (event, CpuId { cpu, socket }) in events_on_cpus {
-                    let raw_fd = event
-                        .perf_event_open(pmu_type, *cpu)
-                        .with_context(|| format!("perf_event_open failed. {ADVICE}"))?;
-                    let fd = unsafe { File::from_raw_fd(raw_fd) };
-                    let scale = event.scale as f64;
-                    let counter = CounterDiff::with_max_value(PERF_MAX_ENERGY);
-                    let opened_event = OpenedPowerEvent {
-                        fd,
-                        scale,
-                        domain: event.domain,
-                        resource: event.domain.to_resource(*socket),
-                        counter,
-                    };
-                    opened.push(opened_event)
+                    opened.push(event.open(pmu_type, *cpu, *socket)?);
                 }
                 Ok(PerfEventProbe { metric, events: opened })
-            },
+            }
             Err(e) => {
                 Self::handle_insufficient_privileges(&e);
                 Err(e)
-            },
+            }
         }
     }
 
@@ -267,8 +305,7 @@ impl PerfEventProbe {
                 sudo sysctl -w kernel.perf_event_paranoid=0
                     
             3. Run the agent as root (not recommanded)."};
-            log::warn!("{msg}");
-        
+        log::warn!("{msg}");
     }
 }
 
@@ -276,21 +313,7 @@ impl alumet::pipeline::Source for PerfEventProbe {
     fn poll(&mut self, measurements: &mut MeasurementAccumulator, timestamp: Timestamp) -> Result<(), PollError> {
         for evt in &mut self.events {
             // read the new value of the perf-events counter
-            let counter_value = read_perf_event(&mut evt.fd)
-                .with_context(|| format!("failed to read perf_event {:?} for domain {:?}", evt.fd, evt.domain))?;
-
-            // correct any overflows
-            let diff = match evt.counter.update(counter_value) {
-                CounterDiffUpdate::FirstTime => None,
-                CounterDiffUpdate::Difference(diff) => Some(diff),
-                CounterDiffUpdate::CorrectedDifference(diff) => {
-                    log::debug!("Overflow on perf_event counter for RAPL domain {}", evt.domain);
-                    Some(diff)
-                }
-            };
-            if let Some(value) = diff {
-                // convert to joules and push
-                let joules = (value as f64) * evt.scale;
+            if let Some(joules) = evt.read_counter_diff_in_joules()? {
                 let consumer = ResourceConsumer::LocalMachine;
                 measurements.push(
                     MeasurementPoint::new(timestamp, self.metric, evt.resource.clone(), consumer, joules)
@@ -308,4 +331,15 @@ impl alumet::pipeline::Source for PerfEventProbe {
         }
         Ok(())
     }
+}
+
+/// Retrieves the type of the RAPL PMU (Power Monitoring Unit) in the Linux kernel.
+fn pmu_type() -> Result<u32> {
+    let path = Path::new("/sys/devices/power/type");
+    let read = fs::read_to_string(path).with_context(|| format!("Failed to read {path:?}"))?;
+    let typ = read
+        .trim_end()
+        .parse()
+        .with_context(|| format!("Failed to parse {path:?}: '{read}'"))?;
+    Ok(typ)
 }
