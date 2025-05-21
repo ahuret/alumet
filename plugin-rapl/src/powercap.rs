@@ -48,6 +48,7 @@ pub struct PowerZone {
     pub socket_id: Option<u32>,
 }
 
+/// manages power zone counter collection
 struct OpenedPowerZone {
     file: File,
     domain: RaplDomainType,
@@ -57,7 +58,7 @@ struct OpenedPowerZone {
     counter: CounterDiff,
 }
 
-/// Powercap probe
+/// Powercap probe collects Alumet metrics related to power zones
 pub struct PowercapProbe {
     metric: TypedMetricId<f64>,
 
@@ -65,6 +66,7 @@ pub struct PowercapProbe {
     zones: Vec<OpenedPowerZone>,
 }
 
+/// Retrieves all Powercap power zones from /sys/devices/virtual/powercap/intel-rapl base path.
 pub fn all_power_zones() -> anyhow::Result<Vec<PowerZone>> {
     all_power_zones_from_path(Path::new(POWERCAP_RAPL_PATH))
 }
@@ -91,6 +93,8 @@ fn all_power_zones_from_path(path: &Path) -> anyhow::Result<Vec<PowerZone>> {
 }
 
 impl PowerZoneFactory {
+    /// creates a new PowerZone from a zone base path. In case the path is not identified as a zone path, None will be returned.
+    /// (eg: /sys/devices/virtual/powercap/intel-rapl/intel-rapl:0)
     fn from_path(path: &Path) -> anyhow::Result<Option<PowerZone>> {
         Ok(match Self::is_zone_path(&path) {
             true => Some(Self::get_zone_from_path(path)?),
@@ -182,6 +186,7 @@ impl PowerZone {
         Ok(())
     }
 
+    /// creates a new OpenedPowerZone from Self by opening the collection file
     fn open(&self) -> anyhow::Result<OpenedPowerZone> {
         let file = File::open(self.energy_path()).with_context(|| {
             format!(
@@ -261,6 +266,7 @@ impl OpenedPowerZone {
 }
 
 impl PowercapProbe {
+    /// creates a new PowercapProbe by passing an Alumet metric ID for energy measurement and related power zones
     pub fn new(metric: TypedMetricId<f64>, zones: &Vec<PowerZone>) -> anyhow::Result<PowercapProbe> {
         if zones.is_empty() {
             return Err(anyhow!("At least one power zone is required for PowercapProbe"))?;
