@@ -2507,8 +2507,11 @@ dependencies = [
  "alumet",
  "anyhow",
  "log",
+ "mio 1.0.4",
  "notify 8.1.0",
+ "pretty_assertions",
  "rustc-hash",
+ "tempfile",
  "thiserror 2.0.12",
  "walkdir",
 ]
