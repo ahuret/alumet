@@ -26,13 +26,13 @@
 //! ```
 
 use core::fmt;
-use fxhash::FxBuildHasher;
 use ordered_float::OrderedFloat;
 use smallvec::SmallVec;
 use std::borrow::Cow;
 use std::fmt::Write;
-use std::hash::{Hash, Hasher};
+use std::hash::{BuildHasher, Hash, Hasher};
 use std::ops::{Add, Sub};
+>>>>>>> 49e66a3 (feat: multivariate synchronisation (based on a linear interpolation) + energy attribution transform)
 use std::time::{Duration, SystemTime, SystemTimeError, UNIX_EPOCH};
 use std::{collections::HashMap, fmt::Display};
 
@@ -165,9 +165,9 @@ impl MeasurementPoint {
 
     /// Attaches multiple attributes to this measurement point, from a [`HashMap`].
     /// Existing attributes with conflicting keys are replaced.
-    pub fn with_attr_map<K: Into<Cow<'static, str>>>(
+    pub fn with_attr_map<K: Into<Cow<'static, str>>, S: BuildHasher>(
         mut self,
-        attributes: HashMap<K, AttributeValue, FxBuildHasher>,
+        attributes: HashMap<K, AttributeValue, S>,
     ) -> Self {
         let converted = attributes.into_iter().map(|(k, v)| (k.into(), v));
         if self.attributes.is_empty() {
