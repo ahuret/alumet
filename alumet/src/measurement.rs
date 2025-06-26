@@ -32,7 +32,6 @@ use std::borrow::Cow;
 use std::fmt::Write;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::ops::{Add, Sub};
->>>>>>> 49e66a3 (feat: multivariate synchronisation (based on a linear interpolation) + energy attribution transform)
 use std::time::{Duration, SystemTime, SystemTimeError, UNIX_EPOCH};
 use std::{collections::HashMap, fmt::Display};
 
@@ -298,17 +297,10 @@ impl WrappedMeasurementValue {
         }
     }
 
-    pub fn as_f64(&self) -> f64 {
+    pub fn to_f64(&self) -> f64 {
         match self {
-            WrappedMeasurementValue::F64(x) => *x,
-            WrappedMeasurementValue::U64(x) => *x as f64,
-        }
-    }
-
-    pub fn as_u64(&self) -> u64 {
-        match self {
-            WrappedMeasurementValue::F64(x) => *x as u64,
-            WrappedMeasurementValue::U64(x) => *x,
+            WrappedMeasurementValue::F64(v) => *v,
+            WrappedMeasurementValue::U64(v) => *v as f64,
         }
     }
 }
