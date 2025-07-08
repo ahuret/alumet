@@ -4,7 +4,6 @@ use alumet::{measurement::AttributeValue, pipeline::elements::source::trigger::T
 use anyhow::{Context, anyhow};
 use util_cgroups::Cgroup;
 
-use super::OarVersion;
 use crate::{
     common::{
         cgroup_events::{CgroupSetupCallback, ProbeSetup, SourceSettings},
@@ -13,6 +12,7 @@ use crate::{
     },
     plugins::oar::{
         attr::{JOB_REGEX_OAR2, JOB_REGEX_OAR3, find_jobid_in_attrs, find_userid_in_attrs},
+        config::OarVersion,
         job_tracker::JobTracker,
     },
 };
@@ -27,7 +27,7 @@ pub struct JobSourceSetup {
 }
 
 impl JobSourceSetup {
-    pub fn new(config: super::Config, tracker: JobTracker) -> anyhow::Result<Self> {
+    pub fn new(config: super::config::Config, tracker: JobTracker) -> anyhow::Result<Self> {
         let trigger = TriggerSpec::at_interval(config.poll_interval);
         match config.oar_version {
             OarVersion::Oar2 => Ok(Self {

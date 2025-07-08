@@ -6,6 +6,7 @@ pub mod detect;
 pub mod hierarchy;
 pub mod measure;
 pub mod mount_wait;
+pub mod file_watch;
 
 // re-exports
 pub use detect::CgroupDetector;
