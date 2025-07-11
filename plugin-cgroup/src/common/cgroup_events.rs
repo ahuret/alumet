@@ -34,6 +34,9 @@ pub struct NoCallback;
 
 impl CgroupRemovalCallback for NoCallback {
     fn on_cgroups_removed(&mut self, cgroups: Vec<Cgroup>) -> anyhow::Result<()> {
+        for cgroup in cgroups {
+            log::debug!("Cgroup removed: {}", cgroup);
+        }
         Ok(())
     }
 }
