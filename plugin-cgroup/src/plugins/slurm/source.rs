@@ -8,12 +8,13 @@ use crate::{
         metrics::{AugmentedMetrics, Metrics},
         regex::RegexAttributesExtrator,
     },
-    plugins::slurm::attr::{find_jobid_in_attrs, JOB_REGEX_SLURM2},
+    plugins::slurm::attr::{find_jobid_in_attrs, JOB_REGEX_SLURM1, JOB_REGEX_SLURM2},
 };
 
 #[derive(Clone)]
 pub struct JobSourceSetup {
-    extractor: RegexAttributesExtrator,
+    extractor_v1: RegexAttributesExtrator,
+    extractor_v2: RegexAttributesExtrator,
     trigger: TriggerSpec,
     jobs_only: bool,
 }
@@ -21,20 +22,10 @@ pub struct JobSourceSetup {
 impl JobSourceSetup {
     pub fn new(config: super::Config) -> anyhow::Result<Self> {
         let trigger = TriggerSpec::at_interval(config.poll_interval);
-        // match config.oar_version {
-        //     SlurmCgroupVersion::V1 => Ok(Self {
-        //         extractor: RegexAttributesExtrator::new(JOB_REGEX_SLURM1)?,
-        //         trigger,
-        //         jobs_only: config.jobs_only,
-        //     }),
-        //     SlurmCgroupVersion::V2 => Ok(Self {
-        //         extractor: RegexAttributesExtrator::new(JOB_REGEX_SLURM2)?,
-        //         trigger,
-        //         jobs_only: config.jobs_only,
-        //     }),
-        // }
+
         Ok(Self {
-            extractor: RegexAttributesExtrator::new(JOB_REGEX_SLURM2)?,
+            extractor_v1: RegexAttributesExtrator::new(JOB_REGEX_SLURM1)?,
+            extractor_v2: RegexAttributesExtrator::new(JOB_REGEX_SLURM2)?,
             trigger,
             jobs_only: config.jobs_only,
         })
@@ -44,20 +35,21 @@ impl JobSourceSetup {
 impl CgroupSetupCallback for JobSourceSetup {
     fn setup_new_probe(&mut self, cgroup: &Cgroup, metrics: &Metrics) -> Option<ProbeSetup> {
         // extracts attributes "job_id" and ("user" or "user_id")
-        let attrs = self
-            .extractor
+        let version = cgroup.hierarchy().version();
+        let extractor = match version {
+            util_cgroups::CgroupVersion::V1 => &mut self.extractor_v1,
+            util_cgroups::CgroupVersion::V2 => &mut self.extractor_v2,
+        };
+
+        let attrs = extractor
             .extract(cgroup.canonical_path())
             .expect("bad regex: it should only match if the input can be parsed into the specified types");
 
         let is_job = !attrs.is_empty();
         let name: String;
         
-
         if is_job {
             let job_id = find_jobid_in_attrs(&attrs).expect("job_id should be set");
-            // log::info!("job_id is: {:?}, attrs: {:?}", job_id, attrs);
-            // attrs.push((String::from("job_id"), AttributeValue::String(job_id.to_string())));
-
             // give a nice name
             name = format!(
                 "slurm-job-{}",
