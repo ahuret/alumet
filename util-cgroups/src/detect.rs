@@ -54,6 +54,12 @@ pub struct CgroupDetector {
     hierarchy: CgroupHierarchy,
 }
 
+impl Drop for CgroupDetector {
+    fn drop(&mut self) {
+        log::debug!("cgroup drop, hierarchy: {:?}", self.hierarchy.root());
+    }
+}
+
 pub struct Config {
     /// Time between each refresh of the filesystem watcher.
     ///
