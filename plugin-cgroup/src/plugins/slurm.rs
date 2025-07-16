@@ -8,9 +8,9 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
 use crate::common::{
-        cgroup_events::{CgroupReactor, NoCallback, ReactorCallbacks, ReactorConfig},
-        metrics::Metrics,
-    };
+    cgroup_events::{CgroupReactor, NoCallback, ReactorCallbacks, ReactorConfig},
+    metrics::Metrics,
+};
 
 mod attr;
 mod source;
@@ -56,7 +56,7 @@ impl AlumetPlugin for SlurmPlugin {
     }
 
     fn start(&mut self, alumet: &mut AlumetPluginStart) -> anyhow::Result<()> {
-        let config = self.config.take().unwrap();
+        let config = self.config.clone().unwrap();
 
         // Prepare for cgroup detection.
         let starting_state = StartingState {
@@ -70,6 +70,7 @@ impl AlumetPlugin for SlurmPlugin {
     }
 
     fn post_pipeline_start(&mut self, alumet: &mut AlumetPostStart) -> anyhow::Result<()> {
+        let config = self.config.clone().unwrap();
         // TODO(core) perhaps we could make the control handle available sooner, but return an error if called before the pipeline is ready?
         let s = self.starting_state.take().unwrap();
         let reactor = CgroupReactor::new(
@@ -80,6 +81,7 @@ impl AlumetPlugin for SlurmPlugin {
                 on_removal: NoCallback,
             },
             alumet.pipeline_control(),
+            config.initial_state_to_pause,
         )
         .context("failed to init CgroupProbeCreator")?;
         self.reactor = Some(reactor);
@@ -92,12 +94,16 @@ impl AlumetPlugin for SlurmPlugin {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
     oar_version: SlurmCgroupVersion,
     #[serde(with = "humantime_serde")]
     poll_interval: Duration,
     jobs_only: bool,
+
+    /// Set to true if you want to start the source in Pause mode. If so it will need to be resumed to poll measurements.
+    /// This is useful for scenario where you dynamically want to start/stop the poll mechanism
+    initial_state_to_pause: bool,
 }
 
 impl Default for Config {
@@ -106,6 +112,7 @@ impl Default for Config {
             oar_version: SlurmCgroupVersion::V2,
             poll_interval: Duration::from_secs(1),
             jobs_only: true,
+            initial_state_to_pause: false,
         }
     }
 }

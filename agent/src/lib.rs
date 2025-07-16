@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use env_logger::Env;
+use std::io::Write;
 
 pub mod exec_hints;
 pub mod word_distance;
@@ -48,5 +49,17 @@ pub fn relative_exe_path() -> std::io::Result<PathBuf> {
 /// }
 /// ```
 pub fn init_logger() {
-    env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
+    env_logger::Builder::from_env(Env::default().default_filter_or("info"))
+        .format(|buf, record| {
+            use chrono::Local;
+            let now = Local::now();
+            writeln!(
+                buf,
+                "{} [{}] - {}",
+                now.format("%Y-%m-%d %H:%M:%S%.3f"),
+                record.level(),
+                record.args()
+            )
+        })
+        .init();
 }

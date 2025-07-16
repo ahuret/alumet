@@ -1,7 +1,7 @@
 use std::{path::PathBuf, time::Duration};
 
 use alumet::{
-    pipeline::elements::source::{trigger, Source},
+    pipeline::elements::source::{control::TaskState, trigger, Source},
     plugin::{
         rust::{deserialize_config, serialize_config, AlumetPlugin},
         ConfigTable,
@@ -167,7 +167,12 @@ impl AlumetPlugin for RaplPlugin {
             .update_interval(self.config.flush_interval)
             .build()
             .unwrap();
-        alumet.add_source("in", source, trigger)?;
+
+        let initial_state = match self.config.initial_state_to_pause {
+            false => TaskState::Run,
+            true => TaskState::Pause,
+        };
+        alumet.add_source("in", source, initial_state, trigger)?;
         Ok(())
     }
 
@@ -278,6 +283,10 @@ struct Config {
 
     /// Set to true to disable perf_events and always use the powercap sysfs.
     no_perf_events: bool,
+
+    /// Set to true if you want to start the source in Pause mode. If so it will need to be resumed to poll measurements.
+    /// This is useful for scenario where you dynamically want to start/stop the poll mechanism
+    initial_state_to_pause: bool,
 }
 
 impl Default for Config {
@@ -286,6 +295,7 @@ impl Default for Config {
             poll_interval: Duration::from_secs(1), // 1Hz
             flush_interval: Duration::from_secs(5),
             no_perf_events: false, // prefer perf_events
+            initial_state_to_pause: false,
         }
     }
 }

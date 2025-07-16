@@ -18,32 +18,34 @@ serde = { version = "1.0.210", features = ["derive"] }
 tokio = { version = "1.40.0", features = ["rt"] }
 toml = "0.8.19"
 thiserror = "2.0.11"
+chrono = "0.4"
 
 # Plugins that are available for every target
-plugin-csv = { path = "../plugin-csv" }
-plugin-prometheus-exporter = { path = "../plugin-prometheus-exporter" }
-plugin-influxdb = { path = "../plugin-influxdb" }
-plugin-relay = { path = "../plugin-relay" }
-plugin-mongodb = { path = "../plugin-mongodb" }
-plugin-opentelemetry = { path = "../plugin-opentelemetry" }
-plugin-aggregation = { path = "../plugin-aggregation" }
+#plugin-csv = { path = "../plugin-csv" }
+#plugin-prometheus-exporter = { path = "../plugin-prometheus-exporter" }
+#plugin-influxdb = { path = "../plugin-influxdb" }
+#plugin-relay = { path = "../plugin-relay" }
+#plugin-mongodb = { path = "../plugin-mongodb" }
+#plugin-opentelemetry = { path = "../plugin-opentelemetry" }
+#plugin-aggregation = { path = "../plugin-aggregation" }
 plugin-energy-attribution = { path = "../plugin-energy-attribution" }
-plugin-energy-estimation-tdp = { path = "../plugin-energy-estimation-tdp" }
-plugin-elasticsearch = { path = "../plugin-elasticsearch" }
-plugin-kwollect-output = { path = "../plugin-kwollect-output" }
-
-# Linux-only dependencies
+#plugin-energy-estimation-tdp = { path = "../plugin-energy-estimation-tdp" }
+#plugin-elasticsearch = { path = "../plugin-elasticsearch" }
+#plugin-kwollect-output = { path = "../plugin-kwollect-output" }
+plugin-argos = { path = "../plugin-argos" }
+#
+## Linux-only dependencies
 [target.'cfg(target_os = "linux")'.dependencies]
 plugin-cgroup = { path = "../plugin-cgroup" }
-plugin-cgroupv1 = { path = "../plugin-cgroupv1" }
-plugin-cgroupv2 = { path = "../plugin-cgroupv2" }
-plugin-grace-hopper = { path = "../plugin-grace-hopper" }
-plugin-nvidia-jetson = { path = "../plugin-nvidia-jetson" }
-plugin-nvidia-nvml = { path = "../plugin-nvidia-nvml" }
-plugin-perf = { path = "../plugin-perf" }
-plugin-procfs = { path = "../plugin-procfs" }
+#plugin-cgroupv1 = { path = "../plugin-cgroupv1" }
+#plugin-cgroupv2 = { path = "../plugin-cgroupv2" }
+#plugin-grace-hopper = { path = "../plugin-grace-hopper" }
+#plugin-nvidia-jetson = { path = "../plugin-nvidia-jetson" }
+#plugin-nvidia-nvml = { path = "../plugin-nvidia-nvml" }
+#plugin-perf = { path = "../plugin-perf" }
+#plugin-procfs = { path = "../plugin-procfs" }
 plugin-rapl = { path = "../plugin-rapl" }
-plugin-socket-control = { path = "../plugin-socket-control" }
+#plugin-socket-control = { path = "../plugin-socket-control" }
 
 [[bin]]
 name = "alumet-agent"

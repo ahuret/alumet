@@ -10,6 +10,7 @@ use crate::pipeline::{
         source::{
             self,
             builder::{AutonomousSourceBuilder, ManagedSource, ManagedSourceBuilder, SendSourceBuilder},
+            control::TaskState,
             trigger::TriggerSpec,
         },
     },
@@ -52,8 +53,14 @@ impl SingleCreationRequestBuilder {
     /// Requests the creation of a (managed) measurement source.
     ///
     /// The source will be triggered according to the `trigger` specification.
-    pub fn add_source(mut self, name: &str, source: Box<dyn Source>, trigger: TriggerSpec) -> CreationRequest {
-        self.inner.add_source(name, source, trigger);
+    pub fn add_source(
+        mut self,
+        name: &str,
+        source: Box<dyn Source>,
+        trigger: TriggerSpec,
+        state: TaskState,
+    ) -> CreationRequest {
+        self.inner.add_source(name, source, trigger, state);
         self.inner.build()
     }
 
@@ -96,10 +103,17 @@ impl MultiCreationRequestBuilder {
         }
     }
 
-    pub fn add_source(&mut self, name: &str, source: Box<dyn Source>, trigger: TriggerSpec) -> &mut Self {
+    pub fn add_source(
+        &mut self,
+        name: &str,
+        source: Box<dyn Source>,
+        trigger: TriggerSpec,
+        state: TaskState,
+    ) -> &mut Self {
         // TODO what about the SourceKey?
-        self.add_source_builder(name, |_| {
+        self.add_source_builder(name, move |_| {
             Ok(ManagedSource {
+                initial_state: state,
                 trigger_spec: trigger,
                 source,
             })

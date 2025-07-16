@@ -23,35 +23,36 @@ const BINARY: &str = env!("CARGO_BIN_NAME");
 fn load_plugins_metadata() -> Vec<PluginMetadata> {
     // plugins that work on every target
     let mut plugins = static_plugins![
-        plugin_csv::CsvPlugin,
-        plugin_prometheus_exporter::PrometheusPlugin,
-        plugin_influxdb::InfluxDbPlugin,
-        plugin_mongodb::MongoDbPlugin,
-        plugin_relay::client::RelayClientPlugin,
-        plugin_relay::server::RelayServerPlugin,
-        plugin_opentelemetry::OpenTelemetryPlugin,
-        plugin_aggregation::AggregationPlugin,
+        //plugin_csv::CsvPlugin,
+        //plugin_prometheus_exporter::PrometheusPlugin,
+        //plugin_influxdb::InfluxDbPlugin,
+        //plugin_mongodb::MongoDbPlugin,
+        //plugin_relay::client::RelayClientPlugin,
+        //plugin_relay::server::RelayServerPlugin,
+        //plugin_opentelemetry::OpenTelemetryPlugin,
+        //plugin_aggregation::AggregationPlugin,
         plugin_energy_attribution::EnergyAttributionPlugin,
-        plugin_energy_estimation_tdp::EnergyEstimationTdpPlugin,
-        plugin_elasticsearch::ElasticSearchPlugin,
-        plugin_kwollect_output::KwollectPlugin,
+        //plugin_energy_estimation_tdp::EnergyEstimationTdpPlugin,
+        //plugin_elasticsearch::ElasticSearchPlugin,
+        //plugin_kwollect_output::KwollectPlugin,
+        plugin_argos::ArgosPlugin,
     ];
 
     // plugins that only work on Linux
     #[cfg(target_os = "linux")]
     {
         plugins.extend(static_plugins![
-            plugin_socket_control::SocketControlPlugin,
+            //plugin_socket_control::SocketControlPlugin,
             plugin_cgroup::plugins::SlurmPlugin,
-            plugin_cgroupv2::K8sPlugin,
-            plugin_cgroupv2::OARPlugin,
-            plugin_cgroupv1::Oar2Plugin,
-            plugin_grace_hopper::GraceHopperPlugin,
+            //plugin_cgroupv2::K8sPlugin,
+            //plugin_cgroupv2::OARPlugin,
+            //plugin_cgroupv1::Oar2Plugin,
+            //plugin_grace_hopper::GraceHopperPlugin,
             plugin_rapl::RaplPlugin,
-            plugin_perf::PerfPlugin,
-            plugin_procfs::ProcfsPlugin,
-            plugin_nvidia_nvml::NvmlPlugin,
-            plugin_nvidia_jetson::JetsonPlugin,
+            //plugin_perf::PerfPlugin,
+            //plugin_procfs::ProcfsPlugin,
+            //plugin_nvidia_nvml::NvmlPlugin,
+            //plugin_nvidia_jetson::JetsonPlugin,
         ]);
     }
 

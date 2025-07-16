@@ -7,7 +7,7 @@ use std::{
 use alumet::pipeline::{
     Source,
     control::{PluginControlHandle, request},
-    elements::source::trigger::TriggerSpec,
+    elements::source::{control::TaskState, trigger::TriggerSpec},
 };
 use anyhow::Context;
 use util_cgroups::{Cgroup, CgroupDetector, CgroupHierarchy, CgroupMountWait, CgroupVersion, detect, mount_wait};
@@ -132,6 +132,7 @@ struct CloneableState<S: CgroupSetupCallback, R: CgroupRemovalCallback> {
     metrics: Metrics,
     callbacks: ReactorCallbacks<S, R>,
     alumet_control: PluginControlHandle,
+    initial_source_state: TaskState,
 }
 
 impl CgroupReactor {
@@ -144,9 +145,20 @@ impl CgroupReactor {
         metrics: Metrics,
         callbacks: ReactorCallbacks<impl CgroupSetupCallback, impl CgroupRemovalCallback>,
         alumet_control: PluginControlHandle,
+        init_state_to_pause: bool,
     ) -> anyhow::Result<Self> {
+        let initial_source_state = match init_state_to_pause {
+            false => TaskState::Run,
+            true => TaskState::Pause,
+        };
         let detectors = AliveDetectors::new();
-        let callback = WaitCallback::new(metrics, callbacks, alumet_control, detectors.clone());
+        let callback = WaitCallback::new(
+            metrics,
+            callbacks,
+            alumet_control,
+            initial_source_state,
+            detectors.clone(),
+        );
         let wait = CgroupMountWait::new(config.v1_coalesce_delay, callback)?;
         Ok(Self { wait, detectors })
     }
@@ -157,6 +169,7 @@ impl<S: CgroupSetupCallback, R: CgroupRemovalCallback> WaitCallback<S, R> {
         metrics: Metrics,
         callbacks: ReactorCallbacks<S, R>,
         alumet_control: PluginControlHandle,
+        initial_source_state: TaskState,
         detectors: AliveDetectors,
     ) -> Self {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -169,6 +182,7 @@ impl<S: CgroupSetupCallback, R: CgroupRemovalCallback> WaitCallback<S, R> {
                 metrics,
                 callbacks,
                 alumet_control,
+                initial_source_state,
             },
             rt,
         }
@@ -194,7 +208,7 @@ const DISPATCH_TIMEOUT: Duration = Duration::from_secs(1);
 
 impl<S: CgroupSetupCallback, R: CgroupRemovalCallback> detect::Callback for DetectionCallback<S, R> {
     fn on_cgroups_created(&mut self, cgroups: Vec<Cgroup>) -> anyhow::Result<()> {
-        log::debug!("detected new cgroups: {cgroups:?}");
+        log::info!("detected new cgroups: {cgroups:?}");
 
         // create the sources
         let mut sources = Vec::with_capacity(cgroups.len());
@@ -228,8 +242,9 @@ impl<S: CgroupSetupCallback, R: CgroupRemovalCallback> detect::Callback for Dete
         // spawn the sources on the Alumet pipeline
         for (source, pers) in sources {
             // TODO spawn the source in a Paused state if requested by the setup
+            log::info!("STARTING IN PAUSE MODE: {:?}", pers.name);
             let dispatch_task = self.state.alumet_control.dispatch(
-                request::create_one().add_source(&pers.name, source, pers.trigger),
+                request::create_one().add_source(&pers.name, source, pers.trigger, self.state.initial_source_state),
                 DISPATCH_TIMEOUT,
             );
             self.rt

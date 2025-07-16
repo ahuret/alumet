@@ -10,6 +10,7 @@ use crate::{
     },
 };
 
+use super::control::TaskState;
 use super::interface::{AutonomousSource, Source};
 use super::trigger::TriggerSpec;
 
@@ -139,6 +140,7 @@ impl std::fmt::Debug for SendSourceBuilder {
 
 /// Information required to register a new managed source to the measurement pipeline.
 pub struct ManagedSource {
+    pub initial_state: TaskState,
     pub trigger_spec: TriggerSpec,
     pub source: Box<dyn Source>,
 }

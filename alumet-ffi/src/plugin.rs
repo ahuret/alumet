@@ -4,7 +4,7 @@ use libc::c_void;
 
 use alumet::measurement::WrappedMeasurementType;
 use alumet::metrics::def::RawMetricId;
-use alumet::pipeline::elements::source::trigger;
+use alumet::pipeline::elements::source::{control::TaskState, trigger};
 use alumet::{plugin::AlumetPluginStart, units::Unit};
 
 use super::pipeline::{FfiOutput, FfiTransform};
@@ -65,6 +65,7 @@ pub extern "C" fn alumet_add_source(
         .add_source(
             "fixme", // TODO update the API to ask for a name or generate one
             source,
+            TaskState::Run,
             trigger::builder::time_interval(poll_interval.into())
                 .flush_interval(flush_interval.into())
                 .build()

@@ -47,8 +47,14 @@ impl EnergyAttributionTransform {
                 .clone();
 
             // Check if the hardware_usage_buffer contains the key to prevent any panic/error bellow.
+            //log::info!("-----------");
+            //log::info!("{:?}", self.hardware_usage_buffer);
+            //log::info!("{consumed_energy_mini_id}");
             if !self.hardware_usage_buffer.contains_key(&consumed_energy_mini_id) {
                 todo!("decide what to do in this case");
+                //break
+                //self.hardware_usage_buffer.drain();
+                //self.consumed_energy_buffer.drain();
             }
 
             let consumed_energy_point = self.consumed_energy_buffer.remove(&consumed_energy_mini_id).unwrap();

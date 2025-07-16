@@ -62,7 +62,7 @@ impl AlumetPlugin for OarPlugin {
 
     fn start(&mut self, alumet: &mut AlumetPluginStart) -> anyhow::Result<()> {
         let tracker = JobTracker::new();
-        let config = self.config.take().unwrap();
+        let config = self.config.clone().unwrap();
 
         // Prepare for cgroup detection.
         let starting_state = StartingState {
@@ -80,6 +80,7 @@ impl AlumetPlugin for OarPlugin {
     }
 
     fn post_pipeline_start(&mut self, alumet: &mut AlumetPostStart) -> anyhow::Result<()> {
+        let config = self.config.clone().unwrap();
         // TODO(core) perhaps we could make the control handle available sooner, but return an error if called before the pipeline is ready?
         let s = self.starting_state.take().unwrap();
         let reactor = CgroupReactor::new(
@@ -90,6 +91,7 @@ impl AlumetPlugin for OarPlugin {
                 on_removal: s.job_cleaner,
             },
             alumet.pipeline_control(),
+            config.initial_state_to_pause,
         )
         .context("failed to init CgroupProbeCreator")?;
         self.reactor = Some(reactor);

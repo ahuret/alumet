@@ -74,6 +74,22 @@ pub(crate) async fn run_managed(
     // by the control loop.
     let config_change = &config.change_notifier;
 
+    let mut run = false;
+    while !run {
+        let initial_state = config.atomic_state.load(Ordering::Relaxed);
+        match initial_state.into() {
+            TaskState::Run => {
+                run = true; // start the main loop
+            }
+            TaskState::Pause => {
+                config_change.notified().await; // wait for the config to change
+            }
+            TaskState::Stop => {
+                config_change.notified().await; // maybe we should return an error here
+            }
+        }
+    }
+
     // main loop
     let mut i = 1usize;
     'run: loop {
