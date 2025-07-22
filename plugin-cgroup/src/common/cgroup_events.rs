@@ -242,7 +242,6 @@ impl<S: CgroupSetupCallback, R: CgroupRemovalCallback> detect::Callback for Dete
         // spawn the sources on the Alumet pipeline
         for (source, pers) in sources {
             // TODO spawn the source in a Paused state if requested by the setup
-            log::info!("STARTING IN PAUSE MODE: {:?}", pers.name);
             let dispatch_task = self.state.alumet_control.dispatch(
                 request::create_one().add_source(&pers.name, source, pers.trigger, self.state.initial_source_state),
                 DISPATCH_TIMEOUT,
