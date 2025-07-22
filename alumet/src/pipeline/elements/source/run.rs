@@ -82,7 +82,7 @@ pub(crate) async fn run_managed(
                 run = true; // start the main loop
             }
             TaskState::Pause => {
-                config_change.notified().await; // wait for the config to change
+                config_change.notified().await; // wait for the config to change - we probably want to timeout here
             }
             TaskState::Stop => {
                 config_change.notified().await; // maybe we should return an error here
