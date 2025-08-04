@@ -135,9 +135,15 @@ impl AnonymousControlHandle {
         match timeout {
             Some(timeout) => self.tx.send_timeout(msg, timeout).await.map_err(|e| match e {
                 SendTimeoutError::Timeout(_) => DispatchError::Timeout,
-                SendTimeoutError::Closed(_) => DispatchError::NotAvailable,
+                SendTimeoutError::Closed(_) => {
+                    println!("NOT AVAILABLE 1");
+                    DispatchError::NotAvailable
+                }
             }),
-            None => self.tx.send(msg).await.map_err(|_| DispatchError::NotAvailable),
+            None => self.tx.send(msg).await.map_err(|_| {
+                println!("NOT AVAILABLE 2");
+                DispatchError::NotAvailable
+            }),
         }
     }
 
@@ -151,9 +157,15 @@ impl AnonymousControlHandle {
         match timeout {
             Some(timeout) => self.tx.send_timeout(msg, timeout).await.map_err(|e| match e {
                 SendTimeoutError::Timeout(_) => SendWaitError::Timeout,
-                SendTimeoutError::Closed(_) => SendWaitError::NotAvailable,
+                SendTimeoutError::Closed(_) => {
+                    println!("NOT AVAILABLE 3: {e:?}");
+                    SendWaitError::NotAvailable
+                }
             }),
-            None => self.tx.send(msg).await.map_err(|_| SendWaitError::NotAvailable),
+            None => self.tx.send(msg).await.map_err(|_| {
+                println!("NOT AVAILABLE 4");
+                SendWaitError::NotAvailable
+            }),
         }?;
         // wait for a response
         match rx.recv().await {
@@ -161,7 +173,10 @@ impl AnonymousControlHandle {
                 Ok(ret) => Ok(ret),
                 Err(err) => Err(SendWaitError::Operation(err)),
             },
-            Err(_recv_error) => Err(SendWaitError::NotAvailable),
+            Err(_recv_error) => {
+                println!("NOT AVAILABLE 5: {_recv_error:?}");
+                Err(SendWaitError::NotAvailable)
+            }
         }
     }
 
@@ -177,7 +192,10 @@ impl AnonymousControlHandle {
         // attempt to send the message right now
         match self.tx.try_send(msg) {
             Ok(()) => Ok(None),
-            Err(TrySendError::Closed(_)) => Err(DispatchError::NotAvailable),
+            Err(TrySendError::Closed(_)) => {
+                println!("NOT AVAILABLE 6");
+                Err(DispatchError::NotAvailable)
+            }
             Err(TrySendError::Full(msg)) => {
                 // the message queue is full, we need to wait in an async task
                 let control_handle = self.clone();

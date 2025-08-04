@@ -36,6 +36,7 @@ use super::trigger::TriggerSpec;
 /// let builder: &dyn ManagedSourceBuilder = &|ctx: &mut dyn ManagedSourceBuildContext| {
 ///     let source = build_my_source()?;
 ///     Ok(ManagedSource {
+///         initial_state: TaskState::Run,
 ///         trigger_spec: trigger::TriggerSpec::at_interval(Duration::from_secs(1)),
 ///         source,
 ///     })

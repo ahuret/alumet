@@ -78,6 +78,7 @@ pub(super) trait ResponseReceiver {
     async fn recv(self) -> Result<Result<Self::Ok, PipelineError>, RecvError>;
 }
 
+#[derive(Debug)]
 pub(super) struct RecvError;
 
 pub(super) struct DirectResponseReceiver<R>(oneshot::Receiver<Result<R, PipelineError>>);
