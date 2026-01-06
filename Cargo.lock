@@ -2589,6 +2589,7 @@ dependencies = [
  "anyhow",
  "env_logger",
  "evalexpr",
+ "humantime-serde",
  "log",
  "pretty_assertions",
  "rustc-hash",
