@@ -80,6 +80,7 @@ impl Source for FullSource {
                 .update(device.total_energy_consumption()?)
                 .difference();
             if let Some(milli_joules) = diff {
+                if milli_joules > 0 {
                 // if meaningful (we need at least two measurements), push
                 measurements.push(MeasurementPoint::new(
                     timestamp,
@@ -88,6 +89,7 @@ impl Source for FullSource {
                     consumer.clone(),
                     milli_joules as f64,
                 ))
+                }
             }
         }
 
