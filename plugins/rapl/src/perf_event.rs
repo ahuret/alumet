@@ -231,6 +231,8 @@ impl OpenedPowerEvent {
             self.fd, self.domain
         ))?;
 
+        log::debug!("RAPL COUNTER : {counter_value:?}");
+
         // correct any overflows
         Ok(match self.counter.update(counter_value) {
             CounterDiffUpdate::FirstTime => None,
@@ -246,6 +248,7 @@ impl OpenedPowerEvent {
         let mut buf = [0u8; 8];
         // rewind() is INVALID for perf events, we must read "at the cursor" every time
         let _ = self.fd.read(&mut buf)?;
+        log::debug!("BUFFER : {buf:?}");
         Ok(u64::from_ne_bytes(buf))
     }
 }
