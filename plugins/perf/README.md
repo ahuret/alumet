@@ -41,6 +41,21 @@ To list the events that are available on your machine, run the `perf list` comma
 
 Note that based on your kernel version, some events could be unavailable.
 
+**For libpfm events:** *(requires a libpfm shared library at runtime - see below)*
+
+`perf_pfm_{event-name}` where `event-name` is any event supported by
+[libpfm4](https://perfmon2.sourceforge.net/) on your CPU, with non-alphanumeric characters
+replaced by `_` (e.g. `RESOURCE_STALLS:ANY` becomes the metric `perf_pfm_RESOURCE_STALLS_ANY`).
+
+The generic hardware/software/cache events above are a small, vendor-neutral subset.
+CPUs expose hundreds of PMU events whose raw encodings differ per
+microarchitecture. libpfm4 knows those encodings: it turns a human-readable name into the raw configuration passed to
+`perf_event_open`. Run `showevtinfo` (from libpfm4) or `perf list` to discover the names
+available on your machine.
+
+Examples : `RESOURCE_STALLS:ANY`, `FRONTEND_RETIRED:DSB_MISS`,
+`UOPS_RETIRED:STALL_CYCLES`, `ITLB_MISSES:STLB_HIT`.
+
 ### Attributes
 
 ## Configuration
@@ -67,7 +82,41 @@ cache_events = [
     "LL_READ_MISS",
 #   // any combination of {cache-id}_{cache-op}_{cache-result} from the lists previously mentionned
 ]
+pfm_events = [
+#   // event names in libpfm syntax; requires a libpfm shared library at runtime
+#   "RESOURCE_STALLS:ANY",
+]
 ```
+
+## Events via libpfm
+
+`pfm_events` are resolved through [libpfm4](https://perfmon2.sourceforge.net/),
+which is **loaded at runtime** with `dlopen`, nothing special is needed at build time, and the
+same Alumet binary works with or without libpfm present. This means:
+
+- **Building** needs no libpfm at all: `pfm_events` support is always compiled in.
+- **Running** requires a libpfm shared library on the machine that runs the agent
+  (e.g. the `libpfm4` package, which provides `libpfm.so.4`) *only if you configure
+  `pfm_events`*. If `pfm_events` is set but no libpfm library can be loaded, those events
+  fail with a clear error; the rest of the plugin keeps working. If `pfm_events` is empty
+  (the default), libpfm is never loaded.
+
+By default the loader looks for `libpfm.so.4` (then `libpfm.so`) in the standard library
+paths (`LD_LIBRARY_PATH`, `ld.so.cache`, default directories). If your library has a
+different name or lives in a non-standard location, point to it with the
+**`ALUMET_LIBPFM_LIB`** environment variable, which accepts either a soname or a full path:
+
+```sh
+# a non-standard soname (still searched in the standard loader paths)
+ALUMET_LIBPFM_LIB=argos-libpfm.so.1 alumet-agent
+
+# or a full path
+ALUMET_LIBPFM_LIB=/opt/argos/lib64/argos-libpfm.so alumet-agent
+```
+
+> Note: libpfm resolves an event name against the **running CPU**, so use a libpfm version
+> recent enough to know your CPU model. An older libpfm falls back to a generic architectural
+> PMU and only resolves basic events (see the error message hint).
 
 ## More information
 
