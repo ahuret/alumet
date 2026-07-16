@@ -56,6 +56,11 @@ available on your machine.
 Examples : `RESOURCE_STALLS:ANY`, `FRONTEND_RETIRED:DSB_MISS`,
 `UOPS_RETIRED:STALL_CYCLES`, `ITLB_MISSES:STLB_HIT`.
 
+**For hardcoded (raw) events:** *(advanced - see below)*
+
+`perf_raw_{name}` where `name` is the label you gave the event in the configuration (with
+non-alphanumeric characters replaced by `_`).
+
 ### Attributes
 
 ## Configuration
@@ -85,6 +90,10 @@ cache_events = [
 pfm_events = [
 #   // event names in libpfm syntax; requires a libpfm shared library at runtime
 #   "RESOURCE_STALLS:ANY",
+]
+raw_events = [
+#   // hardcoded events, given by their raw perf_event_attr fields (advanced)
+#   { name = "my_event", config = "0x00c0" },
 ]
 ```
 
@@ -117,6 +126,40 @@ ALUMET_LIBPFM_LIB=/opt/argos/lib64/argos-libpfm.so alumet-agent
 > Note: libpfm resolves an event name against the **running CPU**, so use a libpfm version
 > recent enough to know your CPU model. An older libpfm falls back to a generic architectural
 > PMU and only resolves basic events (see the error message hint).
+
+## Hardcoded (raw) events
+
+`raw_events` is an escape hatch for advanced users who know the exact encoding of an event
+on a **specific** CPU and want to hardcode it, bypassing both the generic tables and libpfm.
+Each entry maps directly to the fields of `perf_event_open`'s `perf_event_attr`:
+
+```toml
+raw_events = [
+    # a raw core event (type defaults to PERF_TYPE_RAW = 4)
+    { name = "my_event", config = "0x00c0" },
+    # extra fields when needed (e.g. offcore)
+    { name = "offcore",  config = "0x01b7", config1 = "0x3fffc00491" },
+    # explicit type
+    { name = "explicit", config = "0x01", type = 10 },
+    # type resolved at runtime from a PMU device (reads /sys/bus/event_source/devices/<pmu>/type)
+    { name = "l3_miss",  config = "0x0104", pmu = "amd_l3" },
+]
+```
+
+| Field | Required | Meaning |
+| ----- | -------- | ------- |
+| `name` | yes | metric label -> `perf_raw_{name}` |
+| `config` | yes | `perf_event_attr.config` (the event code), hex (`0x…`) or decimal |
+| `config1` / `config2` | no | extra 64-bit fields, hex or decimal (default `0`) |
+| `type` | no | explicit `perf_event_attr.type` (default `4`, `PERF_TYPE_RAW`) |
+| `pmu` | no | resolve `type` from `/sys/bus/event_source/devices/<pmu>/type` — for PMUs whose type is assigned dynamically by the kernel. Mutually exclusive with `type`. |
+
+> **Limitation (uncore):** raw events are opened through the same per-process/cgroup model as
+> the other events. That is correct for **core** events (`type = PERF_TYPE_RAW`). It is **not**
+> correct for **uncore/shared** PMUs (L3, memory controllers, …), which require a system-wide
+> (`pid = -1`) opening mode and per-domain deduplication (`cpumask`) that this plugin does not
+> implement yet. You can already encode such events (e.g. via `pmu`), but the measurement will
+> be wrong until proper uncore support is added.
 
 ## More information
 
