@@ -98,7 +98,7 @@ fn push_mem_usage_per_process<D: NvmlDevice>(
                 };
 
                 let mut measurement =
-                    MeasurementPoint::new(timestamp, source.metrics.used_gpu_memory, resource, consumer, n as u64)
+                    MeasurementPoint::new(timestamp, source.metrics.used_gpu_memory, resource, consumer, n)
                         .with_attr("context", context);
 
                 match process_info.compute_instance_id {
