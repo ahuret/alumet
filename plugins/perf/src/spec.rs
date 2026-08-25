@@ -233,15 +233,15 @@ pub fn parse(entry: &EventEntry) -> anyhow::Result<ParsedEvent> {
 /// Resolve an event name (no modifiers) into a [`NamedPerfEvent`]. Each encoder builds the `NamedPerfEvent`
 /// in its own module; this only dispatches to them. See the module docs for the recognised forms.
 fn resolve_event(name: &str) -> anyhow::Result<NamedPerfEvent> {
-    // raw-hex route: `rN`, a raw code on the default raw PMU.
+    // raw-hex route: `rN` (default raw PMU) or `pmu/rN` (a raw code on a named PMU, incl. uncore).
     if let Some(result) = raw::parse(name) {
         return result;
     }
-    // any `pmu/…/` form (native-on-PMU, raw-on-PMU, pmu-named, pmu-raw): recognised, but not
-    // encoded yet. The whole PMU machinery is planned for a future release.
+    // remaining `pmu/…/` forms (native-on-PMU like `cpu_core/INSTRUCTIONS`, and pmu-named
+    // `pmu/event=,umask=/`): recognised, but not encoded yet. Planned for a future release.
     if name.contains('/') {
         anyhow::bail!(
-            "pmu-named / pmu-raw events (`{name}`) are not supported yet; this is planned for a future release"
+            "PMU-qualified events (`{name}`) other than raw codes (`pmu/rN`) are not supported yet; this is planned for a future release"
         );
     }
 

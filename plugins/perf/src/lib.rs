@@ -31,6 +31,7 @@ mod cpu;
 mod multiplexing;
 mod native;
 mod pfm;
+mod pmu;
 mod raw;
 mod source;
 mod spec;
