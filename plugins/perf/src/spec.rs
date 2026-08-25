@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::native;
 use crate::pfm;
+use crate::pmu;
 use crate::raw;
 
 /// One entry of the `events` config list: a bare string, or a table with a metric `rename`.
@@ -179,12 +180,28 @@ pub struct ConfiguredEvent {
     modifiers: Modifiers,
 }
 
+/// How an event must be opened, decided by the PMU it targets.
+///
+/// The kernel splits PMUs in two: task-attachable core PMUs (they expose `cpus`), and system-wide
+/// PMUs that have no notion of task and only report per designated CPU (they expose a `cpumask`:
+/// uncore, `power`, `cstate_*`, …). The two cannot be opened the same way, so the plugin routes them
+/// on this scope: task-attached events follow the observed process/cgroup; system-wide events are
+/// opened once for the machine, on each CPU of the `cpumask`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Scope {
+    /// Follows the observed process/cgroup (core PMU, or no explicit PMU).
+    TaskAttached,
+    /// Opened system-wide, once per listed CPU (the PMU's `cpumask`).
+    SystemWide { cpus: Vec<u32> },
+}
+
 /// A parsed config event: the metric name suffix (after `perf_`), a description and the event.
 /// This is what's used by Alumet to setup metrics.
 #[derive(Debug)]
 pub struct ParsedEvent {
     pub metric_suffix: String,
     pub description: String,
+    pub scope: Scope,
     pub event: ConfiguredEvent,
 }
 
@@ -214,6 +231,7 @@ pub fn parse(entry: &EventEntry) -> anyhow::Result<ParsedEvent> {
 
     let modifiers = Modifiers::parse(mods_str).with_context(|| format!("invalid event '{input}'"))?;
     let resolved = resolve_event(name).with_context(|| format!("invalid event '{input}'"))?;
+    let scope = scope_of(name).with_context(|| format!("invalid event '{input}'"))?;
 
     let metric_suffix = match rename {
         Some(r) => r,
@@ -223,11 +241,26 @@ pub fn parse(entry: &EventEntry) -> anyhow::Result<ParsedEvent> {
     Ok(ParsedEvent {
         metric_suffix: sanitize(metric_suffix),
         description: resolved.description,
+        scope,
         event: ConfiguredEvent {
             encoding: resolved.encoding,
             modifiers,
         },
     })
+}
+
+/// Decide how an event must be opened, from the PMU it targets (see [`Scope`]).
+///
+/// Only a `pmu/…` form names a PMU; a bare event (native, libpfm, `rN`) has none, so it is
+/// task-attached. A named PMU is system-wide iff it exposes a `cpumask`.
+fn scope_of(name: &str) -> anyhow::Result<Scope> {
+    match pmu::split(name) {
+        Some((pmu, _terms)) => match pmu::read_cpumask(pmu)? {
+            Some(cpus) => Ok(Scope::SystemWide { cpus }),
+            None => Ok(Scope::TaskAttached),
+        },
+        None => Ok(Scope::TaskAttached),
+    }
 }
 
 /// Resolve an event name (no modifiers) into a [`NamedPerfEvent`]. Each encoder builds the `NamedPerfEvent`
@@ -392,6 +425,37 @@ mod tests {
         })
         .unwrap();
         assert_eq!(e.metric_suffix, "my_llc_miss");
+    }
+
+    #[test]
+    fn events_without_a_pmu_are_task_attached() {
+        // No sysfs needed: a bare native/raw event names no PMU, so it follows the observed entity.
+        assert_eq!(parse_simple("INSTRUCTIONS").scope, Scope::TaskAttached);
+        assert_eq!(parse_simple("r0x412e").scope, Scope::TaskAttached);
+    }
+
+    #[test]
+    fn a_system_wide_pmu_event_is_scoped_system_wide() {
+        // A raw code on a PMU that has a `cpumask` (uncore, power, cstate…) is classified system-wide,
+        // carrying that cpumask. Skips cleanly if /sys exposes no such PMU (e.g. a sandbox).
+        let Some((pmu, cpus)) = first_system_wide_pmu() else {
+            eprintln!("skipping a_system_wide_pmu_event_is_scoped_system_wide: no system-wide PMU found");
+            return;
+        };
+        let e = parse_simple(&format!("{pmu}/r0x1"));
+        assert_eq!(e.scope, Scope::SystemWide { cpus });
+    }
+
+    /// Find any PMU exposing a `cpumask` in sysfs (a system-wide PMU), returning its name and cpus.
+    fn first_system_wide_pmu() -> Option<(String, Vec<u32>)> {
+        let entries = std::fs::read_dir("/sys/bus/event_source/devices").ok()?;
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if let Ok(Some(cpus)) = pmu::read_cpumask(&name) {
+                return Some((name, cpus));
+            }
+        }
+        None
     }
 
     #[test]

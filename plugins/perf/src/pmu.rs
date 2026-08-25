@@ -4,9 +4,11 @@
 //! `/sys/bus/event_source/devices/<pmu>/type`, which goes into `perf_event_attr.type`. Reading a
 //! PMU's `cpumask` (to tell system-wide PMUs apart) is added later, alongside the scope detection.
 
-use std::fs;
+use std::{fs, io};
 
 use anyhow::Context;
+
+use crate::cpu::parse_cpu_list;
 
 /// Split a `pmu/terms` string into its PMU name and inner term list.
 ///
@@ -31,6 +33,21 @@ pub fn read_type(pmu: &str) -> anyhow::Result<u32> {
     raw.trim()
         .parse::<u32>()
         .with_context(|| format!("invalid PMU type in {path}: {:?}", raw.trim()))
+}
+
+/// Read a PMU's `cpumask` — the CPUs designated to read a system-wide PMU.
+///
+/// Returns `Ok(None)` when the PMU has no `cpumask` file: that PMU is task-attachable (a core PMU,
+/// which exposes `cpus` instead), so its events follow the observed process/cgroup. Returns
+/// `Ok(Some(cpus))` when the PMU is system-wide (uncore, `power`, `cstate_*`, …): its events are not
+/// tied to a task and must be opened once on each of these CPUs.
+pub fn read_cpumask(pmu: &str) -> anyhow::Result<Option<Vec<u32>>> {
+    let path = format!("/sys/bus/event_source/devices/{pmu}/cpumask");
+    match fs::read_to_string(&path) {
+        Ok(list) => Ok(Some(parse_cpu_list(&list).with_context(|| format!("invalid cpumask in {path}"))?)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("cannot read {path}")),
+    }
 }
 
 #[cfg(test)]
@@ -65,6 +82,37 @@ mod tests {
     #[test]
     fn read_type_rejects_unknown_pmu() {
         assert!(read_type("definitely_not_a_pmu_xyz").is_err());
+    }
+
+    #[test]
+    fn cpumask_absent_reads_as_none() {
+        // A PMU with no `cpumask` file (here: a non-existent one) is treated as task-attachable, so
+        // the classification is `None` rather than an error.
+        assert_eq!(read_cpumask("definitely_not_a_pmu_xyz").unwrap(), None);
+    }
+
+    #[test]
+    fn cpumask_present_reads_as_some() {
+        // Finds a real system-wide PMU (uncore, power, cstate…) and checks its cpumask is non-empty.
+        // Skips cleanly if /sys has none (e.g. a sandbox, or a machine with no such PMU).
+        let Some(pmu) = first_pmu_with_cpumask() else {
+            eprintln!("skipping cpumask_present_reads_as_some: no system-wide PMU found in sysfs");
+            return;
+        };
+        let cpus = read_cpumask(&pmu).unwrap().expect("cpumask file exists");
+        assert!(!cpus.is_empty(), "cpumask of {pmu} should list at least one CPU");
+    }
+
+    /// Find any PMU exposing a `cpumask` in sysfs (a system-wide PMU), returning its name.
+    fn first_pmu_with_cpumask() -> Option<String> {
+        let entries = std::fs::read_dir("/sys/bus/event_source/devices").ok()?;
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if matches!(read_cpumask(&name), Ok(Some(_))) {
+                return Some(name);
+            }
+        }
+        None
     }
 
     /// Find any PMU exposing a numeric `type` in sysfs, returning its name and type.

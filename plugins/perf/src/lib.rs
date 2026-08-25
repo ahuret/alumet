@@ -134,9 +134,22 @@ impl AlumetPlugin for PerfPlugin {
                     let config = config_cloned.lock().unwrap();
                     let mut builder = PerfEventSourceBuilder::observe(o, config.multiplexing_auto_scale)?;
                     for (event, metric) in config.events.iter().zip(&config.metrics) {
-                        builder
-                            .add(&event.event, *metric)
-                            .with_context(|| format!("could not configure event {}", event.metric_suffix))?;
+                        match event.scope {
+                            // System-wide events (uncore, power, cstate…) are not tied to a
+                            // process/cgroup; they will be opened once by a dedicated machine-wide
+                            // source. Skip them here so they don't break this entity source.
+                            spec::Scope::SystemWide { .. } => {
+                                log::debug!(
+                                    "event {} is system-wide, not attaching it to {source_name}",
+                                    event.metric_suffix
+                                );
+                            }
+                            spec::Scope::TaskAttached => {
+                                builder
+                                    .add(&event.event, *metric)
+                                    .with_context(|| format!("could not configure event {}", event.metric_suffix))?;
+                            }
+                        }
                     }
                     let poll_interval = config.poll_interval;
                     let flush_interval = config.flush_interval;

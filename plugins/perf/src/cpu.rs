@@ -3,7 +3,7 @@ use std::num::ParseIntError;
 
 use anyhow::Context;
 
-fn parse_cpu_list(cpulist: &str) -> anyhow::Result<Vec<u32>> {
+pub(crate) fn parse_cpu_list(cpulist: &str) -> anyhow::Result<Vec<u32>> {
     // handles "n" or "start-end"
     fn parse_cpulist_item(item: &str) -> anyhow::Result<Vec<u32>> {
         let bounds: Vec<u32> = item
