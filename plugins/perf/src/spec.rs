@@ -197,8 +197,9 @@ pub struct ConfiguredEvent {
 pub enum Scope {
     /// Follows the observed process/cgroup (core PMU, or no explicit PMU).
     TaskAttached,
-    /// Opened system-wide, once per listed CPU (the PMU's `cpumask`).
-    SystemWide { cpus: Vec<u32> },
+    /// Opened system-wide, once per listed CPU (the PMU's `cpumask`). The PMU name is kept so the
+    /// source can map the measurement to the right hardware resource.
+    SystemWide { pmu: String, cpus: Vec<u32> },
 }
 
 /// A parsed config event: the metric name suffix (after `perf_`), a description and the event.
@@ -268,7 +269,10 @@ pub fn parse(entry: &EventEntry) -> anyhow::Result<ParsedEvent> {
 fn scope_of(name: &str) -> anyhow::Result<Scope> {
     match pmu::split(name) {
         Some((pmu, _terms)) => match pmu::read_cpumask(pmu)? {
-            Some(cpus) => Ok(Scope::SystemWide { cpus }),
+            Some(cpus) => Ok(Scope::SystemWide {
+                pmu: pmu.to_owned(),
+                cpus,
+            }),
             None => Ok(Scope::TaskAttached),
         },
         None => Ok(Scope::TaskAttached),
@@ -455,7 +459,7 @@ mod tests {
             return;
         };
         let e = parse_simple(&format!("{pmu}/r0x1"));
-        assert_eq!(e.scope, Scope::SystemWide { cpus });
+        assert_eq!(e.scope, Scope::SystemWide { pmu, cpus });
     }
 
     #[test]

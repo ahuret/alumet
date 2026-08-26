@@ -287,17 +287,17 @@ impl PerfEventSource {
     /// Build a machine-wide source for system-wide PMUs (uncore, `power`, `cstate_*`, …).
     ///
     /// Such events are not tied to a process or cgroup: each is opened `pid=-1` on every CPU of its
-    /// `cpumask` (`(event, cpu)` gives one group). The cpumask CPU is the *reader* of a shared
-    /// domain, so the measurement is tagged `CpuCore { id: cpu }` / `LocalMachine` for now — a
-    /// placeholder until the resource is mapped to the real domain (socket/package).
+    /// `cpumask` (`(event, cpu)` gives one group). The measurement is tagged with the resource that
+    /// [`resource_of`] derives from the PMU name and the reader CPU's package; the consumer is
+    /// `LocalMachine`.
     pub fn build_system_wide(
         multiplexing_auto_scale: bool,
-        events: impl IntoIterator<Item = (ConfiguredEvent, TypedMetricId<u64>, Vec<u32>)>,
+        events: impl IntoIterator<Item = (ConfiguredEvent, TypedMetricId<u64>, String, Vec<u32>)>,
     ) -> anyhow::Result<Self> {
         let mut groups = Vec::new();
-        for (event, metric, cpus) in events {
+        for (event, metric, pmu, cpus) in events {
             for cpu in cpus {
-                let cpu = cpu as usize;
+                let cpu_idx = cpu as usize;
 
                 // System-wide PMUs (RAPL/uncore/cstate) reject the `exclude_*` domain bits, and the
                 // domain modifiers (`#u`/`#k`/`#h`) are meaningless for them anyway. So we clear the
@@ -308,7 +308,7 @@ impl PerfEventSource {
                     .exclude_kernel(false)
                     .exclude_hv(false)
                     .any_pid()
-                    .one_cpu(cpu);
+                    .one_cpu(cpu_idx);
                 let mut perf_group = leader
                     .build_group()
                     .with_context(|| format!("build_group system-wide on cpu {cpu}"))?;
@@ -319,16 +319,16 @@ impl PerfEventSource {
                     .exclude_kernel(false)
                     .exclude_hv(false)
                     .any_pid()
-                    .one_cpu(cpu);
+                    .one_cpu(cpu_idx);
                 let counter = perf_group
                     .add(&event_builder)
                     .with_context(|| format!("adding system-wide event on cpu {cpu}"))?;
 
                 groups.push(EventGroup {
                     perf_group,
-                    observed_resource: Resource::CpuCore { id: cpu as u32 },
+                    observed_resource: resource_of(&pmu, cpu),
                     observed_consumer: ResourceConsumer::LocalMachine,
-                    cpu_id: Some(cpu as u32),
+                    cpu_id: Some(cpu),
                     counters: vec![(counter, metric)],
                     scaling: GroupCounters::new(1),
                     starved: false,
@@ -342,5 +342,59 @@ impl PerfEventSource {
             event_groups: groups,
             multiplexing_auto_scale,
         })
+    }
+}
+
+/// Map a system-wide PMU to the Alumet [`Resource`] its measurement belongs to.
+///
+/// The PMU name carries the semantics (these names are kernel-stable), and the reader `cpu`'s
+/// package gives the id. A PMU we do not specifically know maps to an explicit `Custom` resource
+/// (`kind` = the PMU name, `id` = the reader CPU) rather than guessing a package or core — this is
+/// also collision-free, since the reader CPU is unique. If the CPU's package cannot be read, the
+/// package-based mappings fall back to that same `Custom` resource.
+fn resource_of(pmu: &str, cpu: u32) -> Resource {
+    let package = cpu::package_of(cpu).ok();
+    match (pmu, package) {
+        // per-core PMU: the reader CPU *is* the physical core.
+        ("cstate_core", _) => Resource::CpuCore { id: cpu },
+        // memory controllers: the RAM of the reader's package.
+        (p, Some(pkg)) if p.starts_with("uncore_imc") => Resource::Dram { pkg_id: pkg },
+        // package-scoped PMUs we know: RAPL and package C-states.
+        (p, Some(pkg)) if p == "power" || p.starts_with("cstate_pkg") => Resource::CpuPackage { id: pkg },
+        // anything else (other uncore boxes, unknown PMUs): explicit rather than guessed.
+        _ => Resource::Custom {
+            kind: pmu.to_owned().into(),
+            id: cpu.to_string().into(),
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resource_of_maps_core_and_unknown_pmus() {
+        // cstate_core: the reader CPU is the physical core (no topology lookup needed).
+        assert_eq!(resource_of("cstate_core", 2), Resource::CpuCore { id: 2 });
+        // An unknown PMU: explicit Custom, collision-free (id = the reader CPU).
+        assert_eq!(
+            resource_of("uncore_cbox_0", 5),
+            Resource::Custom {
+                kind: "uncore_cbox_0".to_owned().into(),
+                id: "5".to_owned().into(),
+            }
+        );
+    }
+
+    #[test]
+    fn resource_of_maps_package_pmus_when_topology_is_available() {
+        // power -> package, uncore_imc -> that package's DRAM. Needs sysfs topology; skip if absent.
+        let Ok(pkg) = cpu::package_of(0) else {
+            eprintln!("skipping resource_of_maps_package_pmus_when_topology_is_available: no topology");
+            return;
+        };
+        assert_eq!(resource_of("power", 0), Resource::CpuPackage { id: pkg });
+        assert_eq!(resource_of("uncore_imc_0", 0), Resource::Dram { pkg_id: pkg });
     }
 }

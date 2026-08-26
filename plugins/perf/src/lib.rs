@@ -108,7 +108,9 @@ impl AlumetPlugin for PerfPlugin {
                 .iter()
                 .zip(&config.metrics)
                 .filter_map(|(event, metric)| match &event.scope {
-                    spec::Scope::SystemWide { cpus } => Some((event.event.clone(), *metric, cpus.clone())),
+                    spec::Scope::SystemWide { pmu, cpus } => {
+                        Some((event.event.clone(), *metric, pmu.clone(), cpus.clone()))
+                    }
                     spec::Scope::TaskAttached => None,
                 })
                 .collect();
@@ -117,7 +119,13 @@ impl AlumetPlugin for PerfPlugin {
                 let poll_interval = config.poll_interval;
                 let flush_interval = config.flush_interval;
                 let auto_scale = config.multiplexing_auto_scale;
+                let add_source_in_pause_state = config.add_source_in_pause_state;
                 drop(config);
+
+                let init_source_state = match add_source_in_pause_state {
+                    false => TaskState::Run,
+                    true => TaskState::Pause,
+                };
 
                 match PerfEventSource::build_system_wide(auto_scale, system_events) {
                     Ok(source) => {
@@ -128,7 +136,7 @@ impl AlumetPlugin for PerfPlugin {
                             "source-system-wide",
                             Box::new(source),
                             trigger,
-                            TaskState::Run,
+                            init_source_state,
                         );
                         runtime_start.block_on(pipeline_control_start.dispatch(request, Duration::from_secs(1)))?;
                         log::info!("Started system-wide perf source with {n} event(s).");

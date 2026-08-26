@@ -131,9 +131,14 @@ The `<event>` part can be one of three forms:
 - **raw-hex** : a raw code `rN`, where `N` is a hexadecimal value representing the raw register
   encoding, with the layout described by `/sys/bus/event_source/devices/<pmu>/format/*`. It targets
   the default raw PMU. (**Supported**, see [Raw events](#raw-events))
+- **raw on a PMU** : `pmu/rN`, the same raw code but on a named PMU (addressed by its sysfs `type`),
+  e.g. `uncore_imc_0/r0x1`. This is the only way to reach a PMU that has no generic namespace, such
+  as the uncore, `power` (RAPL), or `cstate_*` PMUs. (**Supported**, see [Raw events](#raw-events)
+  and [System-wide events](#system-wide-events-uncore-rapl-cstate))
 
 Any event may be followed by `#` and a list of [modifiers](#modifiers), e.g.
-`INSTRUCTIONS#u` or `CACHE_MISSES#u:k`.
+`INSTRUCTIONS#u` or `CACHE_MISSES#u:k`. Modifiers do not apply to
+[system-wide events](#system-wide-events-uncore-rapl-cstate) and are rejected on them.
 
 #### Native event names
 
@@ -192,18 +197,70 @@ When a symbolic name is not enough, you can give the raw event code directly, ju
 
 - **`rN`** — the hexadecimal code `N` goes into the counter's `config` on the default raw PMU
   (`PERF_TYPE_RAW`). Both `r3c` and `r0x412e` are accepted (a `0x` prefix is optional).
+- **`pmu/rN`** — the same code, but on a named PMU. The PMU's numeric `type` is read from
+  `/sys/bus/event_source/devices/<pmu>/type`, so e.g. `uncore_imc_0/r0x1` counts on that memory
+  controller. The trailing slash is optional (`uncore_imc_0/r0x1/` also works). This is required to
+  reach PMUs that have no generic namespace (uncore, `power`, `cstate_*`).
 
 The meaning of the bits in `N` is CPU-specific; the layout is described by
 `/sys/bus/event_source/devices/<pmu>/format/*`. The plugin does not interpret it, it forwards the
 value as-is.
 
-Modifiers work here too: `r0x412e#u:k`. The metric is named after the sanitized event string, so
-`r0x412e` → `perf_r0x412e` (use a `rename` for something friendlier).
+Modifiers work on the default raw PMU (`r0x412e#u:k`), but **not** on a `pmu/rN` that lands on a
+system-wide PMU — see below. The metric is named after the sanitized event string, so `r0x412e` →
+`perf_r0x412e` and `uncore_imc_0/r0x1` → `perf_uncore_imc_0_r0x1` (use a `rename` for something
+friendlier).
+
+#### System-wide events (uncore, RAPL, cstate)
+
+Some PMUs do not measure a single CPU core but a shared domain: the memory controllers
+(`uncore_imc_*`), package energy (`power`, i.e. RAPL), C-state residency (`cstate_*`), and so on.
+Their events cannot be attached to a process or cgroup — they count the whole domain regardless of
+what runs. The kernel marks such a PMU with a `cpumask` (the CPUs allowed to read it), as opposed to
+the core PMUs which expose `cpus`.
+
+The plugin detects this automatically: **if the event's PMU has a `cpumask`, the event is
+system-wide**. Instead of following the observed process/cgroup, it is opened once for the whole
+machine, on each CPU of that `cpumask`, and reported under the hardware resource of the domain (see
+below). You do not configure this — a system-wide event in your `events` list is simply routed this
+way, whatever observation mode (`exec`, `watch`, …) the plugin runs in.
+
+```toml
+events = [
+    "INSTRUCTIONS",        # per-process/cgroup, follows the observed entity
+    "power/r0x2",          # system-wide: RAPL package energy, opened machine-wide
+    "uncore_imc_0/r0x1",   # system-wide: a memory-controller counter
+]
+```
+
+Two consequences:
+
+- **Modifiers are rejected** on system-wide events (`power/r0x2#u` is an error): the domain concepts
+  they express (user/kernel/hypervisor) do not exist for these PMUs, which also reject the underlying
+  `exclude_*` bits.
+- **They need more privilege**: opening an event with no target process requires
+  `perf_event_paranoid < 1` (`0` or `-1`) or `CAP_PERFMON`, which per-process events do not. If that
+  is missing, the plugin logs a warning and keeps working *without* the system-wide events — the rest
+  of your configuration is unaffected.
+
+The **resource** a system-wide measurement is tagged with is derived from the PMU name and the
+reader CPU's package (`/sys/devices/system/cpu/cpuN/topology/physical_package_id`):
+
+| PMU | Resource |
+| --- | --- |
+| `uncore_imc*` (memory controllers) | `Dram` of the reader's package |
+| `cstate_core` (per physical core) | `CpuCore` (the reader CPU) |
+| `power` (RAPL), `cstate_pkg*` | `CpuPackage` (the reader's package) |
+| anything else (other `uncore_*`, unknown) | `Custom { kind = PMU, id = reader CPU }` |
+
+A PMU that is not specifically known maps to an explicit `Custom` resource rather than a guessed
+package, which is also collision-free since the reader CPU is unique.
 
 #### Modifiers
 
 Modifiers are attached after a `#`, one per `:`-separated token (e.g. `INSTRUCTIONS#u:k`).
-An unknown token (e.g. `INSTRUCTIONS#z`) is rejected.
+An unknown token (e.g. `INSTRUCTIONS#z`) is rejected. They do not apply to
+[system-wide events](#system-wide-events-uncore-rapl-cstate), which reject them.
 
 For now these modifiers are supported:
 
@@ -251,6 +308,11 @@ Below is a summary of how different perf_event_paranoid values affect perf plugi
 | 1                               | Allows user-space and kernel-space measurements        | `cap_perfmon` *(or `cap_sys_admin` for Linux < 5.8)* | ✅ Supported                       |
 | 0                               | Allows user-space, kernel-space, and CPU-specific data | `cap_perfmon` *(or `cap_sys_admin` for Linux < 5.8)* | ✅ Supported                       |
 | -1                              | Full access, including raw tracepoints                 | −                                                    | ✅ Supported                       |
+
+The table above is for per-process/cgroup events. [System-wide events](#system-wide-events-uncore-rapl-cstate)
+(uncore, RAPL, cstate) are stricter: they need `perf_event_paranoid < 1` (so `0` or `-1`) or
+`CAP_PERFMON`. At `paranoid = 1` the per-process events still work, but the system-wide ones are
+skipped (with a warning).
 
 Example for setting `perf_event_paranoid`: `sudo sysctl -w kernel.perf_event_paranoid=2` will set the value to **2**.
 
