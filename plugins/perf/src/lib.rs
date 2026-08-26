@@ -22,7 +22,7 @@ use anyhow::Context;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
-use crate::source::{Observable, PerfEventSourceBuilder};
+use crate::source::{Observable, PerfEventSource, PerfEventSourceBuilder};
 
 #[cfg(not(target_os = "linux"))]
 compile_error!("This plugin only works on Linux.");
@@ -97,6 +97,50 @@ impl AlumetPlugin for PerfPlugin {
         let pipeline_control_end = alumet.pipeline_control();
         let runtime_start = alumet.async_runtime().clone();
         let runtime_end = alumet.async_runtime().clone();
+
+        // Start the machine-wide source for system-wide events (uncore, power, cstate…). Unlike the
+        // per-process/cgroup sources below, it is not reactive: it exists for the whole machine, so
+        // it is created once, here, rather than when a consumer appears.
+        {
+            let config = self.config.lock().unwrap();
+            let system_events: Vec<_> = config
+                .events
+                .iter()
+                .zip(&config.metrics)
+                .filter_map(|(event, metric)| match &event.scope {
+                    spec::Scope::SystemWide { cpus } => Some((event.event.clone(), *metric, cpus.clone())),
+                    spec::Scope::TaskAttached => None,
+                })
+                .collect();
+            if !system_events.is_empty() {
+                let n = system_events.len();
+                let poll_interval = config.poll_interval;
+                let flush_interval = config.flush_interval;
+                let auto_scale = config.multiplexing_auto_scale;
+                drop(config);
+
+                match PerfEventSource::build_system_wide(auto_scale, system_events) {
+                    Ok(source) => {
+                        let trigger = TriggerSpec::builder(poll_interval)
+                            .flush_interval(flush_interval)
+                            .build()?;
+                        let request = request::create_one().add_source_with_state(
+                            "source-system-wide",
+                            Box::new(source),
+                            trigger,
+                            TaskState::Run,
+                        );
+                        runtime_start.block_on(pipeline_control_start.dispatch(request, Duration::from_secs(1)))?;
+                        log::info!("Started system-wide perf source with {n} event(s).");
+                    }
+                    // Not fatal: system-wide PMUs need CAP_PERFMON / perf_event_paranoid < 1, which
+                    // the per-process/cgroup events do not. Keep the rest of the plugin working.
+                    Err(e) => log::warn!(
+                        "could not open system-wide perf events (uncore/power/cstate): {e:#}; continuing without them"
+                    ),
+                }
+            }
+        }
 
         // Listen to start consumer events, starting sources.
         event::start_consumer_measurement().subscribe(move |e| {

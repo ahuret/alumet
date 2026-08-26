@@ -1,8 +1,9 @@
-//! sysfs helpers for named PMUs: splitting the `pmu/terms` form and reading a PMU's numeric `type`.
+//! sysfs helpers for named PMUs: splitting the `pmu/terms` form, reading a PMU's numeric `type`, and
+//! its `cpumask`.
 //!
 //! A named PMU (`cpu_core`, `uncore_imc_0`, `power`, …) is addressed by the numeric id in
-//! `/sys/bus/event_source/devices/<pmu>/type`, which goes into `perf_event_attr.type`. Reading a
-//! PMU's `cpumask` (to tell system-wide PMUs apart) is added later, alongside the scope detection.
+//! `/sys/bus/event_source/devices/<pmu>/type`, which goes into `perf_event_attr.type`. Its `cpumask`
+//! (when present) tells the system-wide PMUs apart from the task-attachable core ones.
 
 use std::{fs, io};
 
@@ -44,7 +45,9 @@ pub fn read_type(pmu: &str) -> anyhow::Result<u32> {
 pub fn read_cpumask(pmu: &str) -> anyhow::Result<Option<Vec<u32>>> {
     let path = format!("/sys/bus/event_source/devices/{pmu}/cpumask");
     match fs::read_to_string(&path) {
-        Ok(list) => Ok(Some(parse_cpu_list(&list).with_context(|| format!("invalid cpumask in {path}"))?)),
+        Ok(list) => Ok(Some(
+            parse_cpu_list(&list).with_context(|| format!("invalid cpumask in {path}"))?,
+        )),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e).with_context(|| format!("cannot read {path}")),
     }
@@ -58,7 +61,10 @@ mod tests {
     fn split_extracts_pmu_and_terms() {
         assert_eq!(split("uncore_imc_0/r0x1/"), Some(("uncore_imc_0", "r0x1")));
         assert_eq!(split("cpu_core/INSTRUCTIONS"), Some(("cpu_core", "INSTRUCTIONS"))); // closing / optional
-        assert_eq!(split("cpu/event=0x2e,umask=0x41/"), Some(("cpu", "event=0x2e,umask=0x41")));
+        assert_eq!(
+            split("cpu/event=0x2e,umask=0x41/"),
+            Some(("cpu", "event=0x2e,umask=0x41"))
+        );
     }
 
     #[test]

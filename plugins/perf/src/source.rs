@@ -143,18 +143,6 @@ impl PerfEventSourceBuilder {
     }
 
     pub fn add(&mut self, event: &ConfiguredEvent, alumet_metric: TypedMetricId<u64>) -> anyhow::Result<&mut Self> {
-        // Returns a new [`perf_event::Builder`] configured to build a group of perf events.
-        fn new_group_builder<'a>() -> perf_event::Builder<'a> {
-            use perf_event::ReadFormat;
-
-            // use the DUMMY event for the group leader, because its value is not included in the result of Group::read
-            let mut builder = perf_event::Builder::new(perf_event::events::Software::DUMMY);
-            builder.read_format(
-                ReadFormat::GROUP | ReadFormat::TOTAL_TIME_ENABLED | ReadFormat::TOTAL_TIME_RUNNING | ReadFormat::ID,
-            );
-            builder
-        }
-
         if self.groups.is_empty() {
             // create the group(s)
             match &self.observable {
@@ -279,6 +267,80 @@ impl PerfEventSourceBuilder {
         Ok(PerfEventSource {
             event_groups: self.groups,
             multiplexing_auto_scale: self.multiplexing_auto_scale,
+        })
+    }
+}
+
+/// A new group leader builder: a `DUMMY` software event (its value is excluded from `Group::read`,
+/// it just anchors the group and carries the read format shared by every counter of the group).
+fn new_group_builder<'a>() -> perf_event::Builder<'a> {
+    use perf_event::ReadFormat;
+
+    let mut builder = perf_event::Builder::new(perf_event::events::Software::DUMMY);
+    builder.read_format(
+        ReadFormat::GROUP | ReadFormat::TOTAL_TIME_ENABLED | ReadFormat::TOTAL_TIME_RUNNING | ReadFormat::ID,
+    );
+    builder
+}
+
+impl PerfEventSource {
+    /// Build a machine-wide source for system-wide PMUs (uncore, `power`, `cstate_*`, …).
+    ///
+    /// Such events are not tied to a process or cgroup: each is opened `pid=-1` on every CPU of its
+    /// `cpumask` (`(event, cpu)` gives one group). The cpumask CPU is the *reader* of a shared
+    /// domain, so the measurement is tagged `CpuCore { id: cpu }` / `LocalMachine` for now — a
+    /// placeholder until the resource is mapped to the real domain (socket/package).
+    pub fn build_system_wide(
+        multiplexing_auto_scale: bool,
+        events: impl IntoIterator<Item = (ConfiguredEvent, TypedMetricId<u64>, Vec<u32>)>,
+    ) -> anyhow::Result<Self> {
+        let mut groups = Vec::new();
+        for (event, metric, cpus) in events {
+            for cpu in cpus {
+                let cpu = cpu as usize;
+
+                // System-wide PMUs (RAPL/uncore/cstate) reject the `exclude_*` domain bits, and the
+                // domain modifiers (`#u`/`#k`/`#h`) are meaningless for them anyway. So we clear the
+                // excludes and do *not* apply the event's modifiers, on both leader and member.
+                let mut leader = new_group_builder();
+                leader
+                    .exclude_user(false)
+                    .exclude_kernel(false)
+                    .exclude_hv(false)
+                    .any_pid()
+                    .one_cpu(cpu);
+                let mut perf_group = leader
+                    .build_group()
+                    .with_context(|| format!("build_group system-wide on cpu {cpu}"))?;
+
+                let mut event_builder = perf_event::Builder::new(event.encoding());
+                event_builder
+                    .exclude_user(false)
+                    .exclude_kernel(false)
+                    .exclude_hv(false)
+                    .any_pid()
+                    .one_cpu(cpu);
+                let counter = perf_group
+                    .add(&event_builder)
+                    .with_context(|| format!("adding system-wide event on cpu {cpu}"))?;
+
+                groups.push(EventGroup {
+                    perf_group,
+                    observed_resource: Resource::CpuCore { id: cpu as u32 },
+                    observed_consumer: ResourceConsumer::LocalMachine,
+                    cpu_id: Some(cpu as u32),
+                    counters: vec![(counter, metric)],
+                    scaling: GroupCounters::new(1),
+                    starved: false,
+                });
+            }
+        }
+        for group in &mut groups {
+            group.perf_group.enable().context("enabling system-wide group")?;
+        }
+        Ok(PerfEventSource {
+            event_groups: groups,
+            multiplexing_auto_scale,
         })
     }
 }

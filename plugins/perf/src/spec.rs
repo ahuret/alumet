@@ -81,6 +81,12 @@ impl Modifiers {
         Ok(m)
     }
 
+    /// Whether any modifier is set. Used to reject modifiers on system-wide events, where the domain
+    /// concepts they express (user/kernel/hv/host/guest/idle) do not apply.
+    fn any(&self) -> bool {
+        self.user || self.kernel || self.hv || self.host || self.guest || self.idle_only
+    }
+
     /// The `exclude_*` bits these modifiers produce.
     ///
     /// With no domain modifier we keep the original plugin's default **user space only** (kernel
@@ -232,6 +238,12 @@ pub fn parse(entry: &EventEntry) -> anyhow::Result<ParsedEvent> {
     let modifiers = Modifiers::parse(mods_str).with_context(|| format!("invalid event '{input}'"))?;
     let resolved = resolve_event(name).with_context(|| format!("invalid event '{input}'"))?;
     let scope = scope_of(name).with_context(|| format!("invalid event '{input}'"))?;
+
+    // Domain modifiers express task-level concepts (user/kernel/hv/…) that do not apply to a
+    // system-wide PMU (uncore, power, cstate), which also rejects the underlying `exclude_*` bits.
+    if matches!(scope, Scope::SystemWide { .. }) && modifiers.any() {
+        anyhow::bail!("invalid event '{input}': modifiers do not apply to system-wide events (uncore/power/cstate)");
+    }
 
     let metric_suffix = match rename {
         Some(r) => r,
@@ -444,6 +456,18 @@ mod tests {
         };
         let e = parse_simple(&format!("{pmu}/r0x1"));
         assert_eq!(e.scope, Scope::SystemWide { cpus });
+    }
+
+    #[test]
+    fn modifiers_are_rejected_on_a_system_wide_event() {
+        // A domain modifier on a system-wide event (uncore/power/cstate) is a config error. Skips
+        // cleanly if /sys exposes no such PMU.
+        let Some((pmu, _)) = first_system_wide_pmu() else {
+            eprintln!("skipping modifiers_are_rejected_on_a_system_wide_event: no system-wide PMU found");
+            return;
+        };
+        let err = parse(&EventEntry::Simple(format!("{pmu}/r0x1#u"))).unwrap_err();
+        assert!(format!("{err:#}").contains("system-wide"), "got: {err:#}");
     }
 
     /// Find any PMU exposing a `cpumask` in sysfs (a system-wide PMU), returning its name and cpus.
