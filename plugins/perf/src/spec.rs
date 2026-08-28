@@ -2,18 +2,24 @@
 //!
 //! An event is written `<event>[#<modifiers>]`.
 //!
-//! `<event>` can take one of five forms (a bit like `perf stat -e`). We support a subset for
-//! now and *recognise* the rest so the syntax stays stable across releases:
+//! `<event>` can take one of these forms (a bit like `perf stat -e`):
 //!
 //! - **native** : a symbolic event name (`INSTRUCTIONS`, `LL_READ_MISS`), encoded from the native
 //!   kernel tables (hardware/software/cache). **Supported**.
+//! - **native on a PMU** : a native name pinned to a PMU, `pmu/NAME` (e.g. `cpu_core/INSTRUCTIONS`),
+//!   via the kernel's extended hardware type — targets one cluster of a hybrid CPU. **Supported**.
 //! - **libpfm** : any other name, optionally with unit masks (e.g. `RESOURCE_STALLS:ANY`), resolved
-//!   through libpfm (per-CPU encoding tables). This is the fallback when the native tables don't
-//!   know the name. **Supported**.
-//! - **raw-hex** : a raw code `rN` (hex register encoding) on the default raw PMU. Layout from
-//!   `/sys/bus/event_source/devices/<pmu>/format/*`. **Supported**.
+//!   through libpfm (per-CPU encoding tables). The fallback when the native tables don't know the
+//!   name. **Supported**.
+//! - **raw-hex** : a raw code `rN` (hex register encoding) on the default raw PMU. **Supported**.
+//! - **raw on a PMU** : `pmu/rN`, the same code on a named PMU (its sysfs `type`) — the only way to
+//!   reach a PMU with no generic namespace (uncore, `power`, `cstate_*`). **Supported**.
+//! - **pmu-named** : `pmu/event=M,umask=N,…/`, using the named fields from
+//!   `/sys/bus/event_source/devices/<pmu>/format/*`. **Not yet supported** (rejected with a clear
+//!   "planned for a future release" error).
 //!
-//! A not-yet-supported form is rejected there with an explicit "planned for a future release" error.
+//! An event's [`Scope`] (task-attached vs system-wide) is then derived from the PMU it targets; see
+//! [`Scope`] and [`crate::source`].
 
 use anyhow::Context;
 use perf_event::events::Event;
