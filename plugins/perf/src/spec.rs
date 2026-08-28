@@ -309,11 +309,14 @@ fn resolve_event(name: &str) -> anyhow::Result<NamedPerfEvent> {
     if let Some(result) = raw::parse(name) {
         return result;
     }
-    // remaining `pmu/…/` forms (native-on-PMU like `cpu_core/INSTRUCTIONS`, and pmu-named
-    // `pmu/event=,umask=/`): recognised, but not encoded yet. Planned for a future release.
+    // native event pinned to a PMU: `pmu/NAME` (e.g. `cpu_core/INSTRUCTIONS`), via extended hw type.
+    if let Some(result) = native::parse_on_pmu(name) {
+        return result;
+    }
+    // remaining `pmu/…/` form (pmu-named `pmu/event=,umask=/`): recognised, but not encoded yet.
     if name.contains('/') {
         anyhow::bail!(
-            "PMU-qualified events (`{name}`) other than raw codes (`pmu/rN`) are not supported yet; this is planned for a future release"
+            "PMU events with named fields (`{name}`, i.e. `pmu/event=,umask=/`) are not supported yet; this is planned for a future release"
         );
     }
 

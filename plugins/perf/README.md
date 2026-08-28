@@ -122,10 +122,13 @@ Each event is a string of the form:
 
 #### Event formats
 
-The `<event>` part can be one of three forms:
+The `<event>` part can be one of these forms:
 
 - **native** : a symbolic event name (e.g. `INSTRUCTIONS`, `LL_READ_MISS`), resolved against the
   built-in kernel tables listed in [Native event names](#native-event-names). (**Supported**)
+- **native on a PMU** : a native name pinned to a specific PMU, `pmu/NAME` (e.g.
+  `cpu_core/INSTRUCTIONS`, `cpu_atom/CACHE_MISSES`). On hybrid CPUs this counts the event on a single
+  core cluster (P-cores vs E-cores). (**Supported**, see [On a specific core cluster](#on-a-specific-core-cluster-hybrid-cpus))
 - **libpfm** : any other name, optionally with unit masks (e.g. `RESOURCE_STALLS:ANY`,
   `MEM_LOAD_RETIRED:L3_MISS`), resolved through [libpfm](#libpfm-events). (**Supported**, requires libpfm)
 - **raw-hex** : a raw code `rN`, where `N` is a hexadecimal value representing the raw register
@@ -160,6 +163,18 @@ For example: `LL_READ_MISS`.
 To learn more about the standard events, please refer to the [`perf_event_open` manual](https://man7.org/linux/man-pages/man2/perf_event_open.2.html).
 To list the events that are available on your machine, run the `perf list` command.
 Note that based on your kernel version, some events could be unavailable.
+
+#### On a specific core cluster (hybrid CPUs)
+
+On hybrid CPUs (e.g. Intel P-core/E-core, exposed as the `cpu_core` and `cpu_atom` PMUs), a plain
+native event is counted on a single default cluster (the P-cores). To measure a given cluster
+explicitly, qualify the name with the PMU: `cpu_core/INSTRUCTIONS` or `cpu_atom/INSTRUCTIONS`. This
+works for hardware and cache events; **software** events (e.g. `CONTEXT_SWITCHES`) are CPU-wide and
+have no PMU, so pinning them is rejected.
+
+These are still per-process/cgroup events (the core PMUs are task-attachable), so they follow the
+observed entity like any native event. You can mix clusters in the same configuration —
+`cpu_core/INSTRUCTIONS` and `cpu_atom/INSTRUCTIONS` together — to compare P-core and E-core activity.
 
 #### Libpfm events
 

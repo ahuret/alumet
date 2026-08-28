@@ -8,8 +8,10 @@ use std::{error::Error, fmt::Display};
 use anyhow::Context;
 use itertools::Itertools;
 use perf_event::events::{self, CacheId, CacheOp, CacheResult};
+use perf_event_open_sys::bindings::{PERF_TYPE_HARDWARE, PERF_TYPE_HW_CACHE, PERF_TYPE_SOFTWARE};
 
-use crate::spec::{EventEncoding, NamedPerfEvent};
+use crate::pmu;
+use crate::spec::{EventEncoding, NamedPerfEvent, sanitize};
 
 #[derive(Debug)]
 pub struct UnknownEventError;
@@ -37,6 +39,49 @@ pub fn parse(name: &str) -> anyhow::Result<NamedPerfEvent> {
         return Ok(e);
     }
     parse_cache(name)
+}
+
+/// Try to parse `name` as a native event pinned to a specific PMU, e.g. `cpu_core/INSTRUCTIONS`.
+///
+/// Returns `None` when `name` is not a `pmu/…` form whose term is a native event, so the caller can
+/// try the other encoders. Returns `Some(Err(_))` when the term *is* native but cannot be pinned (a
+/// software event, or an unreadable PMU).
+pub fn parse_on_pmu(name: &str) -> Option<anyhow::Result<NamedPerfEvent>> {
+    let (pmu, term) = pmu::split(name)?;
+    let base = parse(term).ok()?;
+    Some(pin_to_pmu(base, pmu, name))
+}
+
+/// Pin an already-resolved native event to a specific PMU, using the kernel's *extended hardware
+/// type*: the generic event keeps its `PERF_TYPE_*`, and the PMU's numeric type is packed into the
+/// high 32 bits of `config`. This is how a generic event (e.g. `INSTRUCTIONS`) is counted on a single
+/// cluster of a hybrid CPU — `cpu_core/INSTRUCTIONS` vs `cpu_atom/INSTRUCTIONS`.
+///
+/// Only hardware and hardware-cache events can be pinned; software events are CPU-wide and have no
+/// PMU, so they are rejected.
+fn pin_to_pmu(base: NamedPerfEvent, pmu: &str, original: &str) -> anyhow::Result<NamedPerfEvent> {
+    match base.encoding.type_ {
+        PERF_TYPE_HARDWARE | PERF_TYPE_HW_CACHE => {}
+        PERF_TYPE_SOFTWARE => anyhow::bail!(
+            "software event '{}' is CPU-wide and cannot be pinned to PMU '{pmu}'",
+            base.name
+        ),
+        other => anyhow::bail!("event '{}' (perf type {other}) cannot be pinned to a PMU", base.name),
+    }
+    let pmu_type = pmu::read_type(pmu)?;
+    Ok(NamedPerfEvent {
+        name: sanitize(original),
+        description: format!("{} (on PMU {pmu})", base.description),
+        encoding: EventEncoding {
+            config: extended_config(base.encoding.config, pmu_type),
+            ..base.encoding
+        },
+    })
+}
+
+/// Pack a PMU's numeric type into the high 32 bits of `config` (kernel "extended hardware type").
+fn extended_config(config: u64, pmu_type: u32) -> u64 {
+    config | (u64::from(pmu_type) << 32)
 }
 
 /// Returns an hardware perf event from its name.
@@ -190,5 +235,50 @@ mod tests {
     #[test]
     fn unknown_name_is_rejected() {
         assert!(parse("DEFINITELY_NOT_A_REAL_EVENT_XYZ").is_err());
+    }
+
+    #[test]
+    fn extended_config_packs_pmu_type_high() {
+        // (pmu_type << 32) | config. e.g. cpu_core (type 4) + generic INSTRUCTIONS (1).
+        assert_eq!(extended_config(0x1, 4), 0x4_0000_0001);
+        assert_eq!(extended_config(0xc0, 10), 0xa_0000_00c0);
+    }
+
+    #[test]
+    fn software_cannot_be_pinned_to_a_pmu() {
+        // Software events are CPU-wide; the type check rejects them before any sysfs read.
+        let base = parse("CONTEXT_SWITCHES").unwrap();
+        let err = pin_to_pmu(base, "cpu_core", "cpu_core/CONTEXT_SWITCHES").unwrap_err();
+        assert!(format!("{err:#}").contains("CPU-wide"), "got: {err:#}");
+    }
+
+    #[test]
+    fn hardware_pinned_to_pmu_uses_extended_type() {
+        // Needs a real PMU (for its numeric type); skip cleanly if sysfs has none.
+        let Some((pmu, pmu_type)) = first_available_pmu() else {
+            eprintln!("skipping hardware_pinned_to_pmu_uses_extended_type: no PMU found in sysfs");
+            return;
+        };
+        let base = parse("INSTRUCTIONS").unwrap();
+        let base_config = base.encoding.config;
+        let base_type = base.encoding.type_;
+
+        let e = pin_to_pmu(base, &pmu, &format!("{pmu}/INSTRUCTIONS")).unwrap();
+        // The generic type is preserved; the PMU is packed into config's high bits.
+        assert_eq!(e.encoding.type_, base_type);
+        assert_eq!(e.encoding.config, extended_config(base_config, pmu_type));
+        assert_eq!(e.name, sanitize(&format!("{pmu}/INSTRUCTIONS")));
+    }
+
+    /// Find any PMU exposing a numeric `type` in sysfs, returning its name and type.
+    fn first_available_pmu() -> Option<(String, u32)> {
+        let entries = std::fs::read_dir("/sys/bus/event_source/devices").ok()?;
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if let Ok(t) = pmu::read_type(&name) {
+                return Some((name, t));
+            }
+        }
+        None
     }
 }
