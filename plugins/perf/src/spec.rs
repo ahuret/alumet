@@ -219,6 +219,29 @@ impl ConfiguredEvent {
         self.encoding
     }
 
+    /// The key identifying which perf group this event may share. A perf group cannot span two
+    /// different hardware PMUs, so [`crate::source`] groups events by this key.
+    ///
+    /// Software and generic events (which the kernel places on the default core PMU) share the core
+    /// key, so they stay together as before. An event pinned to another PMU — a raw code on a named
+    /// PMU (`cpu_atom/rN`), or the extended-hardware-type form — gets that PMU's key, landing it in a
+    /// separate group.
+    pub(crate) fn pmu_group_key(&self) -> u64 {
+        use perf_event_open_sys::bindings::{
+            PERF_TYPE_HARDWARE, PERF_TYPE_HW_CACHE, PERF_TYPE_RAW, PERF_TYPE_SOFTWARE,
+        };
+        // The default core PMU is reachable as PERF_TYPE_RAW on this ABI (== `cpu` / `cpu_core`).
+        let core = u64::from(PERF_TYPE_RAW);
+        match self.encoding.type_ {
+            PERF_TYPE_HARDWARE | PERF_TYPE_HW_CACHE => {
+                let extended = self.encoding.config >> 32; // extended hardware type (hybrid pinning)
+                if extended != 0 { extended } else { core }
+            }
+            PERF_TYPE_SOFTWARE => core, // software events can share any hardware group
+            other => u64::from(other),  // RAW (== core), or a named PMU's dynamic type (raw-on-pmu)
+        }
+    }
+
     /// Apply this event's modifiers to a freshly-created builder. Must run *after*
     /// [`perf_event::Builder::new`], which forces its own `exclude_kernel`/`exclude_hv` defaults;
     /// this sets every bit explicitly so the result never depends on that ordering.
@@ -448,6 +471,31 @@ mod tests {
         // No sysfs needed: a bare native/raw event names no PMU, so it follows the observed entity.
         assert_eq!(parse_simple("INSTRUCTIONS").scope, Scope::TaskAttached);
         assert_eq!(parse_simple("r0x412e").scope, Scope::TaskAttached);
+    }
+
+    #[test]
+    fn core_events_share_one_group_key() {
+        // Generic hardware, raw, and software events all land on the default core PMU, so they share
+        // the same group key and stay in one group (as before). No sysfs needed.
+        let hw = parse_simple("INSTRUCTIONS").event.pmu_group_key();
+        let raw = parse_simple("r0x1").event.pmu_group_key();
+        let sw = parse_simple("CONTEXT_SWITCHES").event.pmu_group_key();
+        assert_eq!(hw, raw);
+        assert_eq!(hw, sw);
+    }
+
+    #[test]
+    fn distinct_core_pmus_get_distinct_group_keys() {
+        // On a hybrid CPU, cpu_core and cpu_atom are different hardware PMUs, so their events get
+        // different keys and are never grouped together (which the kernel would reject). Skips
+        // cleanly on a non-hybrid CPU.
+        if pmu::read_type("cpu_core").is_err() || pmu::read_type("cpu_atom").is_err() {
+            eprintln!("skipping distinct_core_pmus_get_distinct_group_keys: not a hybrid CPU");
+            return;
+        }
+        let core = parse_simple("cpu_core/r0x1").event.pmu_group_key();
+        let atom = parse_simple("cpu_atom/r0x1").event.pmu_group_key();
+        assert_ne!(core, atom);
     }
 
     #[test]

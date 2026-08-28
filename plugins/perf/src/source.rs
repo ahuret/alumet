@@ -37,6 +37,9 @@ struct EventGroup {
     observed_resource: Resource,
     observed_consumer: ResourceConsumer,
     cpu_id: Option<u32>,
+    /// The PMU key shared by this group's events (see [`ConfiguredEvent::pmu_group_key`]). A perf
+    /// group cannot span two hardware PMUs, so there is one group per `(cpu_id, group_key)`.
+    group_key: u64,
     counters: Vec<(perf_event::Counter, TypedMetricId<u64>)>,
     scaling: GroupCounters,
     /// Whether the previous poll found the group starved, so that we only warn on the transition
@@ -143,105 +146,55 @@ impl PerfEventSourceBuilder {
     }
 
     pub fn add(&mut self, event: &ConfiguredEvent, alumet_metric: TypedMetricId<u64>) -> anyhow::Result<&mut Self> {
-        if self.groups.is_empty() {
-            // create the group(s)
-            match &self.observable {
-                Observable::Process { pid } => {
-                    // Observe the process on any cpu.
+        // Events are partitioned into one group per hardware PMU (a perf group cannot span two): this
+        // key selects which group the event joins, or opens.
+        let key = event.pmu_group_key();
 
-                    // build group
-                    let mut perf_group = new_group_builder()
-                        .observe_pid(*pid)
-                        .any_cpu()
-                        .build_group()
-                        .with_context(|| format!("build_group with observe_pid({pid}).any_cpu()"))?;
+        // Destructure so the shared borrow of `observable` (for the cgroup fd) and the mutable borrow
+        // of `groups` are disjoint.
+        let Self {
+            observable,
+            groups,
+            online_cpus,
+            ..
+        } = self;
 
-                    // add event (the params must be the same)
-                    let mut event_builder = perf_event::Builder::new(event.encoding());
-                    event_builder.observe_pid(*pid).any_cpu();
-                    event.configure(&mut event_builder);
-                    let counter = perf_group
-                        .add(&event_builder)
-                        .with_context(|| format!("perf_group.add with observe_pid({pid}).any_cpu()"))?;
-
-                    // add metadata
-                    let group_with_info = EventGroup {
-                        perf_group,
-                        observed_resource: Resource::LocalMachine,
-                        observed_consumer: ResourceConsumer::Process {
-                            pid: u32::try_from(*pid).unwrap(),
-                        },
-                        cpu_id: None,
-                        counters: vec![(counter, alumet_metric)],
-                        scaling: GroupCounters::default(),
-                        starved: false,
-                    };
-
-                    // done
-                    self.groups = vec![group_with_info];
-                }
-                Observable::Cgroup { path, fd } => {
-                    // Observe the cgroup on each cpu separately (this is a restriction of perf_event_open).
-
-                    // build one group per cpu
-                    let mut groups = Vec::new();
-                    for cpu_id in &self.online_cpus {
-                        let cpu_id = *cpu_id as usize;
-
-                        // build group
-                        let mut perf_group = new_group_builder()
-                            .observe_cgroup(fd)
-                            .one_cpu(cpu_id)
-                            .build_group()
-                            .with_context(|| format!("build_group with observe_cgroup({path}).one_cpu({cpu_id})"))?;
-
-                        // add event (the params must be the same)
-                        let mut event_builder = perf_event::Builder::new(event.encoding());
-                        event_builder.observe_cgroup(fd).one_cpu(cpu_id);
-                        event.configure(&mut event_builder);
-                        let counter = perf_group
-                            .add(&event_builder)
-                            .with_context(|| format!("perf_group.add with observe_cgroup({path}).one_cpu({cpu_id})"))?;
-
-                        let group_with_info = EventGroup {
-                            perf_group,
-                            observed_resource: Resource::CpuCore { id: cpu_id as u32 },
-                            observed_consumer: ResourceConsumer::ControlGroup {
-                                path: path.to_owned().into(),
-                            },
-                            cpu_id: Some(cpu_id as u32),
-                            counters: vec![(counter, alumet_metric)],
-                            scaling: GroupCounters::default(),
-                            starved: false,
-                        };
-                        groups.push(group_with_info);
-                    }
-                    self.groups = groups;
-                }
+        match &*observable {
+            Observable::Process { pid } => {
+                // Observe the process on any cpu.
+                let pid = *pid;
+                let consumer = ResourceConsumer::Process {
+                    pid: u32::try_from(pid).unwrap(),
+                };
+                ensure_group_and_add(
+                    groups,
+                    observable,
+                    key,
+                    None,
+                    Resource::LocalMachine,
+                    consumer,
+                    event,
+                    alumet_metric,
+                )?;
             }
-        } else {
-            // add to the group(s)
-            for group in &mut self.groups {
-                let mut event_builder = perf_event::Builder::new(event.encoding());
-
-                // Compute the event params to be the same as the group's params.
-                match &self.observable {
-                    Observable::Process { pid } => {
-                        event_builder.observe_pid(*pid).any_cpu();
-                    }
-                    Observable::Cgroup { path: _, fd } => {
-                        event_builder.observe_cgroup(fd).one_cpu(group.cpu_id.unwrap() as usize);
-                    }
+            Observable::Cgroup { path, .. } => {
+                // Observe the cgroup on each cpu separately (a restriction of perf_event_open).
+                let path = path.clone();
+                for cpu in online_cpus.iter().copied() {
+                    let consumer = ResourceConsumer::ControlGroup {
+                        path: path.clone().into(),
+                    };
+                    ensure_group_and_add(
+                        groups,
+                        observable,
+                        key,
+                        Some(cpu),
+                        Resource::CpuCore { id: cpu },
+                        consumer,
+                        event,
+                        alumet_metric,
+                    )?;
                 }
-                event.configure(&mut event_builder);
-
-                let counter = group.perf_group.add(&event_builder).with_context(|| {
-                    format!(
-                        "existing perf_group.add(event_builder), group resource={:?}, consumer={:?}, cpu={:?}",
-                        group.observed_resource, group.observed_consumer, group.cpu_id
-                    )
-                })?;
-                group.counters.push((counter, alumet_metric))
             }
         }
         Ok(self)
@@ -283,6 +236,70 @@ fn new_group_builder<'a>() -> perf_event::Builder<'a> {
     builder
 }
 
+/// Point a builder at the observed entity (leader and members must share these settings).
+fn point<'o>(builder: &mut perf_event::Builder<'o>, observable: &'o Observable, cpu_id: Option<u32>) {
+    match observable {
+        Observable::Process { pid } => {
+            builder.observe_pid(*pid).any_cpu();
+        }
+        Observable::Cgroup { fd, .. } => {
+            builder
+                .observe_cgroup(fd)
+                .one_cpu(cpu_id.expect("a cgroup group is always bound to a specific cpu") as usize);
+        }
+    }
+}
+
+/// Add `event` to the group matching `(cpu_id, key)`, creating that group (a fresh `DUMMY` leader)
+/// if none exists yet. Every builder — leader and members — is pointed at the same entity.
+#[allow(clippy::too_many_arguments)]
+fn ensure_group_and_add(
+    groups: &mut Vec<EventGroup>,
+    observable: &Observable,
+    key: u64,
+    cpu_id: Option<u32>,
+    resource: Resource,
+    consumer: ResourceConsumer,
+    event: &ConfiguredEvent,
+    metric: TypedMetricId<u64>,
+) -> anyhow::Result<()> {
+    if let Some(group) = groups.iter_mut().find(|g| g.cpu_id == cpu_id && g.group_key == key) {
+        let mut event_builder = perf_event::Builder::new(event.encoding());
+        point(&mut event_builder, observable, cpu_id);
+        event.configure(&mut event_builder);
+        let counter = group
+            .perf_group
+            .add(&event_builder)
+            .with_context(|| format!("adding event to group (cpu={cpu_id:?}, pmu_key={key:#x})"))?;
+        group.counters.push((counter, metric));
+    } else {
+        let mut leader = new_group_builder();
+        point(&mut leader, observable, cpu_id);
+        let mut perf_group = leader
+            .build_group()
+            .with_context(|| format!("building perf group (cpu={cpu_id:?}, pmu_key={key:#x})"))?;
+
+        let mut event_builder = perf_event::Builder::new(event.encoding());
+        point(&mut event_builder, observable, cpu_id);
+        event.configure(&mut event_builder);
+        let counter = perf_group
+            .add(&event_builder)
+            .with_context(|| format!("adding first event to group (cpu={cpu_id:?}, pmu_key={key:#x})"))?;
+
+        groups.push(EventGroup {
+            perf_group,
+            observed_resource: resource,
+            observed_consumer: consumer,
+            cpu_id,
+            group_key: key,
+            counters: vec![(counter, metric)],
+            scaling: GroupCounters::default(),
+            starved: false,
+        });
+    }
+    Ok(())
+}
+
 impl PerfEventSource {
     /// Build a machine-wide source for system-wide PMUs (uncore, `power`, `cstate_*`, …).
     ///
@@ -296,6 +313,7 @@ impl PerfEventSource {
     ) -> anyhow::Result<Self> {
         let mut groups = Vec::new();
         for (event, metric, pmu, cpus) in events {
+            let key = event.pmu_group_key();
             for cpu in cpus {
                 let cpu_idx = cpu as usize;
 
@@ -329,6 +347,7 @@ impl PerfEventSource {
                     observed_resource: resource_of(&pmu, cpu),
                     observed_consumer: ResourceConsumer::LocalMachine,
                     cpu_id: Some(cpu),
+                    group_key: key,
                     counters: vec![(counter, metric)],
                     scaling: GroupCounters::new(1),
                     starved: false,
