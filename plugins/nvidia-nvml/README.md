@@ -142,14 +142,17 @@ skip_failed_devices = true
 # See below
 mode = "full"
 
-gpm_metrics = []
+# Only available on Hopper and newer architectures
+# This requires the "full" mode
+# A list of the available metrics is on the README (section 'GPM metrics')
+gpm_metrics = ["DramBwUtil", "Nvdec0Util"]
 ```
 
 ### Choosing the Right Mode
 
 The NVML plugin offers two modes: `full` and `minimal`.
 
-In `full` mode, all the metrics listed in the table above are provided (if they are available on the GPU).
+In `full` mode, all the metrics listed  and the required GPM metrics in the table above are provided (if they are available on the GPU).
 
 If you want to make the GPU measurement faster, you can use the `minimal` mode.
 
