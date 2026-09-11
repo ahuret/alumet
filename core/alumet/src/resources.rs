@@ -49,7 +49,14 @@ pub enum Resource {
     /// A physical CPU package (which is not always the same as a NUMA node).
     CpuPackage { id: u32 },
     /// A CPU core.
-    CpuCore { id: u32 },
+    CpuCore {
+        /// The unique id of this core, from the point of view of the kernel.
+        ///
+        /// Even if you have multiple CPU packages, each core gets a unique id.
+        /// To know where this core physically resides (package id + core id in the package), you need to ask your operating system.
+        /// On Linux, you'll find this data in `/sys/devices/system/cpu/cpu{id}/topology/(core_id|physical_package_id)`
+        id: u32,
+    },
     /// The RAM attached to a CPU package.
     Dram { pkg_id: u32 },
     /// A dedicated GPU.
