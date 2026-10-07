@@ -58,6 +58,8 @@ events = [
     "RESOURCE_STALLS:ANY",                           # libpfm event with a unit mask
     { event = "CONTEXT_SWITCHES", rename = "ctxsw" }, # -> metric perf_ctxsw
     { event = "LL_READ_MISS#h", rename = "LL_READ_MISS_HYPERVISOR"}, # hypervisor only
+    { event = "LL_READ_ACCESS", group = "llc" },     # counted together with the event below
+    { event = "LL_READ_MISS", group = "llc" },       # (see the "Event groups" section)
 ]
 
 # If true, start the sources in "paused" state.
@@ -66,6 +68,9 @@ add_source_in_pause_state = false
 # Compensate for counter multiplexing (optional, true by default).
 # See the "Counter multiplexing" section below.
 multiplexing_auto_scale = true
+# How the cgroups are counted: "auto" (default), "native" or "via_processes".
+# See the "Cgroups on Linux 6.2 to 7.2" section below.
+cgroup_counting = "auto"
 ```
 
 See [Event formats](#event-formats) section for more information about the supported syntax of events.
@@ -310,6 +315,45 @@ ones are affected.
 The surest way to avoid multiplexing altogether is to configure no more events than the CPU has
 hardware counters (typically 4 to 8). Note that a single event can already be multiplexed if
 something else is using the PMU, for example another `perf` process running system-wide.
+
+### Cgroups on Linux 6.2 to 7.2
+
+From Linux 6.2 to 7.2 (and in RHEL 9.3 and later, RHEL 10), the kernel miscounts the cgroup events
+once they are multiplexed: their values can be anywhere from half to several times the truth, as
+long as no other cgroup runs on the cpu (a busy job alone on its cpus). It was fixed in Linux 7.3
+(commit e4c7c401c6b9). Events attached to a process are not affected.
+
+With `cgroup_counting = "via_processes"`, the plugin counts a cgroup through its processes instead,
+and sums them. Each process is counted with what it creates afterwards (perf `inherit`), and the
+new processes are found by reading `cgroup.procs` of the cgroup and of its descendants every
+100 ms. The measurements are the same (consumer: the cgroup), except that they are per package or
+for the whole machine instead of per cpu. What a new process does before it is found is lost (up
+to 100 ms when a process arrives in the cgroup, e.g. at the start of a Slurm step), and a child
+process that leaves the cgroup is still counted.
+
+`"auto"` (the default) uses `"native"` when the kernel is not affected (older than the rewrite, or
+Linux 7.3 or later) and `"via_processes"` otherwise. Distribution kernels with a lower version
+(RHEL) may get the fix as a backport, which cannot be detected: set `"native"` once they have it.
+
+`"via_processes"` needs the same permissions as the cgroup events (CAP_PERFMON or
+`perf_event_paranoid <= 0`). It costs one set of counters per thread that existed when its process
+was opened (the threads created later share them).
+
+### Event groups
+
+By default, every event has a group of its own, and the kernel multiplexes the events one by one.
+Events given the same `group` name are opened in a single perf group: the kernel puts them on the
+PMU together, so they are counted during the very same time. Use it for events whose ratio matters,
+such as the accesses and the misses of a cache, so that the ratio stays consistent even when the
+events are multiplexed.
+
+A group is put on the PMU only when all its events fit on the hardware counters at once. The kernel
+accepts to open a group that can never fit, so check the logs: such a group is reported with a
+warning ("never made it onto the PMU") naming its events, and its values stay at zero.
+
+A perf group is opened per observed process or cgroup, per cpu and per PMU. The events sharing a
+`group` name are only counted together when they also share these three: otherwise, they silently
+form several perf groups.
 
 ### perf_event_paranoid and capabilities
 

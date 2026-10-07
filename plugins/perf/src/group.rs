@@ -14,6 +14,8 @@ pub use crate::multiplexing::Accuracy;
 pub enum Target {
     /// A process, on any cpu.
     Process { pid: u32 },
+    /// A thread and every task it creates after being opened (perf `inherit`), on any cpu.
+    TaskTree { tid: u32 },
     /// A cgroup, on one cpu.
     ///
     /// Unlike processes, cgroups cannot be monitored with `cpu = -1`, a specific cpu id is required
@@ -33,6 +35,8 @@ pub struct EventGroupBuilder {
     target: Target,
     perf_group: perf_event::Group,
     counters: Vec<perf_event::Counter>,
+    /// The name of each counter's event, in `counters` order, for the logs.
+    event_names: Vec<String>,
     /// The PMU of the group's events, set by the first [`add`](Self::add): a perf group cannot span
     /// two PMUs.
     pmu_key: Option<u64>,
@@ -47,6 +51,7 @@ pub struct EventGroup {
     target: Target,
     perf_group: perf_event::Group,
     counters: Vec<perf_event::Counter>,
+    event_names: Vec<String>,
     partial_pmu: bool,
     auto_scale: bool,
     /// The value of each counter since the group was enabled, estimated for multiplexing, in
@@ -77,6 +82,7 @@ impl EventGroupBuilder {
             target,
             perf_group,
             counters: Vec::new(),
+            event_names: Vec::new(),
             pmu_key: None,
             partial_pmu: false,
             auto_scale,
@@ -95,7 +101,7 @@ impl EventGroupBuilder {
         let mut builder = perf_event::Builder::new(event.encoding());
         attach_to(&mut builder, &self.target);
         match (event.scope(), &self.target) {
-            (Scope::TaskAttached { binding }, Target::Process { .. }) => {
+            (Scope::TaskAttached { binding }, Target::Process { .. } | Target::TaskTree { .. }) => {
                 event.configure(&mut builder);
                 self.partial_pmu = binding.as_ref().is_some_and(|b| b.partial);
             }
@@ -116,6 +122,7 @@ impl EventGroupBuilder {
 
         self.pmu_key = Some(key);
         self.counters.push(counter);
+        self.event_names.push(event.name().to_owned());
         Ok(CounterId(self.counters.len() - 1))
     }
 
@@ -128,6 +135,7 @@ impl EventGroupBuilder {
             target: self.target,
             perf_group: self.perf_group,
             counters: self.counters,
+            event_names: self.event_names,
             partial_pmu: self.partial_pmu,
             auto_scale: self.auto_scale,
             starved: false,
@@ -158,16 +166,18 @@ impl EventGroup {
         let starved = running == 0 && enabled > 0;
         if starved && !self.starved {
             log::warn!(
-                "perf group ({:?}) ran but never made it onto the PMU, its counters are stalled. \
+                "perf group {:?} ({:?}) ran but never made it onto the PMU, its counters are stalled. \
                  Possible causes: more events configured in one group than the CPU has hardware counters, or \
                  tools holding the PMU system-wide.",
+                self.event_names,
                 self.target,
             );
         }
         self.starved = starved;
         if !starved && running < enabled && !self.partial_pmu {
             log::debug!(
-                "perf group ({:?}) was only on the PMU {:.1}% of the time, its values are {}",
+                "perf group {:?} ({:?}) was only on the PMU {:.1}% of the time, its values are {}",
+                self.event_names,
                 self.target,
                 100.0 * (running as f64) / (enabled as f64),
                 accuracy.as_str(),
@@ -225,6 +235,10 @@ fn attach_to<'t>(builder: &mut perf_event::Builder<'t>, target: &'t Target) {
             // PID_MAX_LIMIT is 2^22 on Linux, a pid always fits.
             let pid = i32::try_from(*pid).expect("pid should fit in an i32");
             builder.observe_pid(pid).any_cpu();
+        }
+        Target::TaskTree { tid } => {
+            let tid = i32::try_from(*tid).expect("tid should fit in an i32");
+            builder.observe_pid(tid).any_cpu().inherit(true);
         }
         Target::Cgroup { fd, cpu } => {
             builder.observe_cgroup(fd).one_cpu(*cpu as usize);

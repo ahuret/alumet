@@ -7,5 +7,6 @@ mod multiplexing;
 mod plugin;
 pub mod resource;
 mod sysfs;
+mod tasks;
 
-pub use plugin::PerfPlugin;
+pub use plugin::{PerfPlugin, metric_name};

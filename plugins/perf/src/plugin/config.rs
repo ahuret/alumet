@@ -4,7 +4,7 @@ use std::time::Duration;
 use alumet::metrics::TypedMetricId;
 use serde::{Deserialize, Serialize};
 
-use crate::event;
+use crate::event::{self, ParsedEvent};
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -17,7 +17,8 @@ pub(super) struct Config {
     /// The events to measure, described with the unified syntax (see [`event`]).
     ///
     /// Each entry is either a bare string (`"REF_CPU_CYCLES"`, `"INSTRUCTIONS#u"`) or an inline
-    /// table with an optional metric `rename` (`{ event = "LL_READ_MISS", rename = "llc_miss" }`).
+    /// table with an optional metric `rename` and an optional perf `group`
+    /// (`{ event = "LL_READ_MISS", rename = "llc_miss", group = "llc" }`).
     pub(super) events: Vec<EventEntry>,
 
     /// If `true`, the perf sources will be started in pause state.
@@ -38,6 +39,24 @@ pub(super) struct Config {
     /// Either way, every measurement carries an `accuracy` attribute telling whether its value is
     /// exact, extrapolated or underestimated.
     pub(super) multiplexing_auto_scale: bool,
+
+    /// How the events of a cgroup are counted.
+    ///
+    /// Since Linux 6.2 (and RHEL 9.3), the kernel miscounts the cgroup events once they are
+    /// multiplexed (fixed in Linux 7.3). `via_processes` counts every process of the cgroup instead,
+    /// and sums them; `native` opens the events on the cgroup; `auto` (the default) picks `native`
+    /// when the kernel is not affected, `via_processes` otherwise.
+    #[serde(default)]
+    pub(super) cgroup_counting: CgroupCounting,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum CgroupCounting {
+    #[default]
+    Auto,
+    Native,
+    ViaProcesses,
 }
 
 impl Default for Config {
@@ -56,11 +75,14 @@ impl Default for Config {
             add_source_in_pause_state: false,
 
             multiplexing_auto_scale: true,
+
+            cgroup_counting: CgroupCounting::Auto,
         }
     }
 }
 
-/// One entry of the `events` config list: a bare string, or a table with a metric `rename`.
+/// One entry of the `events` config list: a bare string, or a table with a metric `rename` and a
+/// perf `group`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
 pub(super) enum EventEntry {
@@ -69,26 +91,42 @@ pub(super) enum EventEntry {
         event: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rename: Option<String>,
+        /// The events of a group are scheduled onto the PMU together, so they are counted during the
+        /// very same time. Without a group, the event has a group of its own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        group: Option<String>,
     },
 }
 
 impl EventEntry {
     /// Parse the event; a `rename` replaces the name of every event it expands to, so that they all
-    /// share the renamed metric.
-    pub(super) fn parse(&self) -> anyhow::Result<Vec<event::ParsedEvent>> {
-        match self {
-            EventEntry::Simple(event) => event::parse(event),
-            EventEntry::Detailed { event, rename } => {
-                let mut events = event::parse(event)?;
-                if let Some(rename) = rename {
-                    for e in &mut events {
-                        e.set_name(rename.clone());
-                    }
-                }
-                Ok(events)
+    /// share the renamed metric, and they all belong to the `group`.
+    pub(super) fn parse(&self) -> anyhow::Result<Vec<ConfiguredEvent>> {
+        let (spec, rename, group) = match self {
+            EventEntry::Simple(event) => (event, None, None),
+            EventEntry::Detailed { event, rename, group } => (event, rename.as_ref(), group.as_ref()),
+        };
+        let mut events = event::parse(spec)?;
+        if let Some(rename) = rename {
+            for e in &mut events {
+                e.set_name(rename.clone());
             }
         }
+        Ok(events
+            .into_iter()
+            .map(|event| ConfiguredEvent {
+                event,
+                group: group.cloned(),
+            })
+            .collect())
     }
+}
+
+/// An event to count, and the perf group it belongs to (`None`: a group of its own).
+#[derive(Debug, Clone)]
+pub(super) struct ConfiguredEvent {
+    pub(super) event: ParsedEvent,
+    pub(super) group: Option<String>,
 }
 
 // TODO proper deserialization with serde?
@@ -96,17 +134,38 @@ pub(super) struct ParsedConfig {
     pub(super) poll_interval: Duration,
     pub(super) flush_interval: Duration,
 
-    pub(super) events: Vec<event::ParsedEvent>,
+    pub(super) events: Vec<ConfiguredEvent>,
+    /// The Alumet metric of each event, in `events` order.
     pub(super) metrics: Vec<TypedMetricId<u64>>,
 
     pub(super) add_source_in_pause_state: bool,
 
     pub(super) multiplexing_auto_scale: bool,
+
+    /// Whether to count the cgroups through their processes (`cgroup_counting`, with `auto`
+    /// resolved).
+    pub(super) cgroup_via_processes: bool,
+}
+
+/// The name of the Alumet metric the plugin creates for `event`.
+pub(super) fn metric_name_of(event: &ParsedEvent) -> String {
+    format!("perf_{}", sanitize(event.name()))
+}
+
+/// The name of the Alumet metric the plugin creates for an event of the `events` config, given
+/// without `rename` (e.g. `INSTRUCTIONS#u:k` gives `perf_instructions`).
+pub fn metric_name(spec: &str) -> anyhow::Result<String> {
+    // An event fanned onto several core PMUs keeps one name, hence one metric.
+    let event = event::parse(spec)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("event '{spec}' expands to nothing"))?;
+    Ok(metric_name_of(&event))
 }
 
 /// Turn a string into a metric-name-safe suffix: letters are lowercased, non-alphanumeric
 /// characters become `_`, and leading/trailing `_` are trimmed.
-pub(super) fn sanitize(s: &str) -> String {
+fn sanitize(s: &str) -> String {
     let mapped: String = s
         .chars()
         .map(|c| {
@@ -125,13 +184,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn metric_name_ignores_the_modifiers() {
+        assert_eq!(metric_name("INSTRUCTIONS#u:k").unwrap(), "perf_instructions");
+        assert_eq!(metric_name("CPU_CYCLES").unwrap(), "perf_cpu_cycles");
+        assert!(metric_name("DEFINITELY_NOT_A_REAL_EVENT_XYZ").is_err());
+    }
+
+    #[test]
     fn rename_overrides_metric_name() {
         let entry = EventEntry::Detailed {
             event: "LL_READ_MISS".to_owned(),
             rename: Some("my llc miss".to_owned()),
+            group: None,
         };
         for parsed in &entry.parse().unwrap() {
-            assert_eq!(sanitize(parsed.name()), "my_llc_miss");
+            assert_eq!(sanitize(parsed.event.name()), "my_llc_miss");
+        }
+    }
+
+    #[test]
+    fn group_applies_to_every_expanded_event() {
+        let entry = EventEntry::Detailed {
+            event: "INSTRUCTIONS".to_owned(),
+            rename: None,
+            group: Some("ipc".to_owned()),
+        };
+        for parsed in &entry.parse().unwrap() {
+            assert_eq!(parsed.group.as_deref(), Some("ipc"));
+        }
+        for parsed in &EventEntry::Simple("INSTRUCTIONS".to_owned()).parse().unwrap() {
+            assert_eq!(parsed.group, None);
         }
     }
 
@@ -147,11 +229,13 @@ mod tests {
                 "INSTRUCTIONS",
                 "LL_READ_MISS",
                 { event = "CACHE_MISSES", rename = "my_event" },
+                { event = "LL_READ_MISS", group = "llc" },
             ]
         "#;
         let w: Wrap = toml::from_str(toml).unwrap();
-        assert_eq!(w.events.len(), 3);
+        assert_eq!(w.events.len(), 4);
         assert!(matches!(w.events[0], EventEntry::Simple(_)));
         assert!(matches!(w.events[2], EventEntry::Detailed { .. }));
+        assert!(matches!(&w.events[3], EventEntry::Detailed { group: Some(g), .. } if g == "llc"));
     }
 }

@@ -9,6 +9,7 @@ use std::{
 use alumet::{
     metrics::TypedMetricId,
     pipeline::{
+        Source,
         control::{matching::SourceMatcher, request},
         elements::source::{control::TaskState, trigger::TriggerSpec},
         matching::{SourceNamePattern, StringPattern},
@@ -22,8 +23,10 @@ use alumet::{
 use anyhow::Context;
 
 use crate::event;
-use config::{Config, ParsedConfig, sanitize};
-use source::{Observable, PerfEventSourceBuilder};
+use crate::tasks::OpenThread;
+pub use config::metric_name;
+use config::{CgroupCounting, Config, ConfiguredEvent, ParsedConfig, metric_name_of};
+use source::{CgroupTasksSource, Observable, PerfEventSource, PerfEventSourceBuilder};
 
 mod config;
 mod source;
@@ -62,6 +65,20 @@ impl AlumetPlugin for PerfPlugin {
             // The metrics are initialized in start()
             metrics: Vec::new(),
             add_source_in_pause_state: config.add_source_in_pause_state,
+            cgroup_via_processes: match config.cgroup_counting {
+                CgroupCounting::Native => false,
+                CgroupCounting::ViaProcesses => true,
+                CgroupCounting::Auto => {
+                    let reliable = crate::tasks::cgroup_events_reliable();
+                    if !reliable {
+                        log::info!(
+                            "this kernel may miscount multiplexed cgroup events: cgroups are counted through their processes \
+                             (set cgroup_counting = \"native\" if the kernel has the fix)"
+                        );
+                    }
+                    !reliable
+                }
+            },
         };
         Ok(Box::new(PerfPlugin {
             config: Arc::new(Mutex::new(config)),
@@ -77,8 +94,8 @@ impl AlumetPlugin for PerfPlugin {
         // `pmu` attribute), so a metric is created once per distinct name and reused.
         let mut metrics = Vec::with_capacity(config.events.len());
         let mut by_name: HashMap<String, TypedMetricId<u64>> = HashMap::new();
-        for e in &config.events {
-            let metric_name = format!("perf_{}", sanitize(e.name()));
+        for ConfiguredEvent { event: e, .. } in &config.events {
+            let metric_name = metric_name_of(e);
             let metric = match by_name.get(&metric_name) {
                 Some(metric) => *metric,
                 None => {
@@ -109,7 +126,7 @@ impl AlumetPlugin for PerfPlugin {
                 .events
                 .iter()
                 .zip(&config.metrics)
-                .filter_map(|(event, metric)| match event.scope() {
+                .filter_map(|(event, metric)| match event.event.scope() {
                     event::Scope::SystemWide { .. } => Some((event.clone(), *metric)),
                     event::Scope::TaskAttached { .. } => None,
                 })
@@ -130,7 +147,7 @@ impl AlumetPlugin for PerfPlugin {
                 let source =
                     PerfEventSourceBuilder::observe(Observable::Machine, auto_scale).and_then(|mut builder| {
                         for (event, metric) in &system_events {
-                            builder.add(event, *metric)?;
+                            builder.add(&event.event, event.group.as_deref(), *metric)?;
                         }
                         builder.build().context("enabling system-wide groups")
                     });
@@ -160,9 +177,11 @@ impl AlumetPlugin for PerfPlugin {
         // Listen to start consumer events, starting sources.
         alumet_event_bus::start_consumer_measurement().subscribe(move |e| {
             for consumer in e.0 {
-                let observable = match consumer {
+                let config = config_cloned.lock().unwrap();
+                let (source, source_name): (Box<dyn Source>, String) = match consumer {
                     alumet::resources::ResourceConsumer::Process { pid } => {
-                        Some((Observable::Process { pid }, process_source_name(pid)))
+                        let source = task_source(&config, Observable::Process { pid })?;
+                        (Box::new(source), process_source_name(pid))
                     }
                     alumet::resources::ResourceConsumer::ControlGroup { path } => {
                         // making an assumption about the cgroup mounting point here to be /sys/fs/cgroup
@@ -171,61 +190,43 @@ impl AlumetPlugin for PerfPlugin {
                         // note that it will only work for cgroup v2
                         // todo: make it dynamic or configurable
                         let absolute_path = format!("/sys/fs/cgroup{path}");
-                        let Ok(fd) = File::open(&absolute_path) else {
-                            panic!("cgroup not found in filesystem: {absolute_path}")
-                        };
-                        Some((
-                            Observable::Cgroup {
+                        let source: Box<dyn Source> = if config.cgroup_via_processes {
+                            let open_thread = thread_opener(&config, path.to_string());
+                            match CgroupTasksSource::start(path.to_string(), open_thread) {
+                                Ok(source) => Box::new(source),
+                                Err(e) => {
+                                    log::warn!("cannot observe cgroup {absolute_path}: {e:#}");
+                                    continue;
+                                }
+                            }
+                        } else {
+                            let Ok(fd) = File::open(&absolute_path) else {
+                                log::warn!("cgroup not found in filesystem: {absolute_path}");
+                                continue;
+                            };
+                            let observable = Observable::Cgroup {
                                 path: path.to_string(),
                                 fd: Arc::new(fd),
-                            },
-                            cgroup_source_name(path),
-                        ))
+                            };
+                            Box::new(task_source(&config, observable)?)
+                        };
+                        (source, cgroup_source_name(path))
                     }
-                    _ => None,
+                    _ => continue,
                 };
+                let trigger = TriggerSpec::builder(config.poll_interval)
+                    .flush_interval(config.flush_interval)
+                    .build()?;
+                let init_source_state = match config.add_source_in_pause_state {
+                    false => TaskState::Run,
+                    true => TaskState::Pause,
+                };
+                drop(config);
 
-                if let Some((o, source_name)) = observable {
-                    log::info!("Starting to observe {o:?}...");
-                    let config = config_cloned.lock().unwrap();
-                    let mut builder = PerfEventSourceBuilder::observe(o, config.multiplexing_auto_scale)?;
-                    for (event, metric) in config.events.iter().zip(&config.metrics) {
-                        match event.scope() {
-                            // System-wide events (uncore, power, cstate…) are not tied to a
-                            // process/cgroup; they will be opened once by a dedicated machine-wide
-                            // source. Skip them here so they don't break this entity source.
-                            event::Scope::SystemWide { .. } => (),
-                            event::Scope::TaskAttached { .. } => {
-                                builder
-                                    .add(event, *metric)
-                                    .with_context(|| format!("could not configure event {}", event.name()))?;
-                            }
-                        }
-                    }
-                    let poll_interval = config.poll_interval;
-                    let flush_interval = config.flush_interval;
-                    let add_source_in_pause_state = config.add_source_in_pause_state;
-                    drop(config);
-
-                    let source = builder.build()?;
-                    let trigger = TriggerSpec::builder(poll_interval)
-                        .flush_interval(flush_interval)
-                        .build()?;
-
-                    let init_source_state = match add_source_in_pause_state {
-                        false => TaskState::Run,
-                        true => TaskState::Pause,
-                    };
-
-                    let request = request::create_one().add_source_with_state(
-                        &source_name,
-                        Box::new(source),
-                        trigger,
-                        init_source_state,
-                    );
-                    runtime_start.block_on(pipeline_control_start.dispatch(request, Duration::from_secs(1)))?;
-                    log::debug!("New source {source_name} has started.");
-                }
+                let request =
+                    request::create_one().add_source_with_state(&source_name, source, trigger, init_source_state);
+                runtime_start.block_on(pipeline_control_start.dispatch(request, Duration::from_secs(1)))?;
+                log::debug!("New source {source_name} has started.");
             }
             Ok(())
         });
@@ -255,6 +256,53 @@ impl AlumetPlugin for PerfPlugin {
     fn stop(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
+}
+
+/// The source of a process or a cgroup counted natively, with the task-attached events.
+fn task_source(config: &ParsedConfig, observable: Observable) -> anyhow::Result<PerfEventSource> {
+    log::info!("Starting to observe {observable:?}...");
+    build_task_source(
+        observable,
+        &config.events,
+        &config.metrics,
+        config.multiplexing_auto_scale,
+    )
+}
+
+/// Opens the task-attached events on a thread of `cgroup` and on what it creates afterwards.
+fn thread_opener(config: &ParsedConfig, cgroup: String) -> OpenThread<PerfEventSource> {
+    log::info!("Starting to observe cgroup {cgroup} through its processes...");
+    let (events, metrics, auto_scale) = (
+        config.events.clone(),
+        config.metrics.clone(),
+        config.multiplexing_auto_scale,
+    );
+    Box::new(move |tid| {
+        let observable = Observable::TaskTree {
+            tid,
+            cgroup: cgroup.clone(),
+        };
+        build_task_source(observable, &events, &metrics, auto_scale)
+    })
+}
+
+fn build_task_source(
+    observable: Observable,
+    events: &[ConfiguredEvent],
+    metrics: &[TypedMetricId<u64>],
+    auto_scale: bool,
+) -> anyhow::Result<PerfEventSource> {
+    let mut builder = PerfEventSourceBuilder::observe(observable, auto_scale)?;
+    for (ConfiguredEvent { event, group }, metric) in events.iter().zip(metrics) {
+        // System-wide events (uncore, power, cstate…) are not tied to a process/cgroup; they are
+        // opened once by the machine-wide source.
+        if let event::Scope::TaskAttached { .. } = event.scope() {
+            builder
+                .add(event, group.as_deref(), *metric)
+                .with_context(|| format!("could not configure event {}", event.name()))?;
+        }
+    }
+    Ok(builder.build()?)
 }
 
 // prevent 'Too many open files' error
