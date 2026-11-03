@@ -12,10 +12,9 @@ pub use crate::multiplexing::Accuracy;
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum Target {
-    /// A process, on any cpu.
-    Process { pid: u32 },
-    /// A thread and every task it creates after being opened (perf `inherit`), on any cpu.
-    TaskTree { tid: u32 },
+    /// A task (a thread: perf counts the given tid only), on any cpu; with `inherit`, also every
+    /// task it creates after being opened.
+    Task { tid: u32, inherit: bool },
     /// A cgroup, on one cpu.
     ///
     /// Unlike processes, cgroups cannot be monitored with `cpu = -1`, a specific cpu id is required
@@ -101,7 +100,7 @@ impl EventGroupBuilder {
         let mut builder = perf_event::Builder::new(event.encoding());
         attach_to(&mut builder, &self.target);
         match (event.scope(), &self.target) {
-            (Scope::TaskAttached { binding }, Target::Process { .. } | Target::TaskTree { .. }) => {
+            (Scope::TaskAttached { binding }, Target::Task { .. }) => {
                 event.configure(&mut builder);
                 self.partial_pmu = binding.as_ref().is_some_and(|b| b.partial);
             }
@@ -214,7 +213,7 @@ pub fn check_event(spec: &str) -> anyhow::Result<()> {
     let events = event::parse(spec).with_context(|| format!("event '{spec}' cannot be encoded"))?;
     for e in &events {
         let target = match e.scope() {
-            Scope::TaskAttached { .. } => Target::Process { pid: 0 },
+            Scope::TaskAttached { .. } => Target::Task { tid: 0, inherit: false },
             Scope::SystemWide { pmu, cpus } => Target::Cpu {
                 cpu: *cpus
                     .first()
@@ -231,14 +230,10 @@ pub fn check_event(spec: &str) -> anyhow::Result<()> {
 /// Attach the counter to the group's target (leader and members must share these settings).
 fn attach_to<'t>(builder: &mut perf_event::Builder<'t>, target: &'t Target) {
     match target {
-        Target::Process { pid } => {
-            // PID_MAX_LIMIT is 2^22 on Linux, a pid always fits.
-            let pid = i32::try_from(*pid).expect("pid should fit in an i32");
-            builder.observe_pid(pid).any_cpu();
-        }
-        Target::TaskTree { tid } => {
+        Target::Task { tid, inherit } => {
+            // PID_MAX_LIMIT is 2^22 on Linux, a tid always fits.
             let tid = i32::try_from(*tid).expect("tid should fit in an i32");
-            builder.observe_pid(tid).any_cpu().inherit(true);
+            builder.observe_pid(tid).any_cpu().inherit(*inherit);
         }
         Target::Cgroup { fd, cpu } => {
             builder.observe_cgroup(fd).one_cpu(*cpu as usize);

@@ -1,12 +1,6 @@
 //! The perf [`Source`]: how the configured events are spread over [`EventGroup`]s, and how their
 //! values are reported to Alumet.
-use std::{
-    collections::HashMap,
-    fs::File,
-    io,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{fs::File, io, sync::Arc};
 
 use alumet::{
     measurement::{MeasurementAccumulator, MeasurementPoint, Timestamp},
@@ -21,17 +15,13 @@ use crate::event::{ParsedEvent, Scope};
 use crate::group::{Accuracy, EventGroup, EventGroupBuilder, Target};
 use crate::resource;
 use crate::sysfs;
-use crate::tasks::{OpenThread, Tracker};
 
 #[derive(Debug)]
 pub(super) enum Observable {
-    /// Observe a process.
-    Process { pid: u32 },
+    /// Observe a process; with `inherit`, also every task it creates after being opened.
+    Process { pid: u32, inherit: bool },
     /// Observe a cgroup. `path` is the canonical cgroup path (relative to the cgroup root).
     Cgroup { path: String, fd: Arc<File> },
-    /// Observe a thread and every task it creates afterwards, as part of the cgroup `cgroup`: see
-    /// [`CgroupTasksSource`].
-    TaskTree { tid: u32, cgroup: String },
     /// Observe the whole machine, for the system-wide PMUs (uncore, `power`, `cstate_*`, …).
     Machine,
 }
@@ -41,7 +31,7 @@ pub(super) struct PerfEventSource {
 }
 
 /// What a group measures, and the Alumet metric of each of its counters (in `add` order).
-struct GroupInfo {
+pub(super) struct GroupInfo {
     metrics: Vec<TypedMetricId<u64>>,
     /// Partition key: there is one group per `(cpu_id, key, group)` (a perf group cannot span two
     /// PMUs).
@@ -49,15 +39,18 @@ struct GroupInfo {
     cpu_id: Option<u32>,
     /// The group name from the config; `None` for an event with a group of its own.
     group: Option<String>,
-    resource: Resource,
+    pub(super) resource: Resource,
     consumer: ResourceConsumer,
     /// The core PMU name, reported as the `pmu` attribute; `None` for events with no specific PMU.
-    pmu_attr: Option<String>,
+    pub(super) pmu_attr: Option<String>,
 }
 
 impl PerfEventSource {
     /// Reads every group and calls `f` with each counter's value.
-    fn read_each(&mut self, mut f: impl FnMut(&GroupInfo, TypedMetricId<u64>, u64, Accuracy)) -> anyhow::Result<()> {
+    pub(super) fn read_each(
+        &mut self,
+        mut f: impl FnMut(&GroupInfo, TypedMetricId<u64>, u64, Accuracy),
+    ) -> anyhow::Result<()> {
         for (group, info) in &mut self.groups {
             group.read()?;
             for (metric, value) in info.metrics.iter().zip(group.values()) {
@@ -68,7 +61,7 @@ impl PerfEventSource {
     }
 }
 
-fn point(
+pub(super) fn point(
     timestamp: Timestamp,
     metric: TypedMetricId<u64>,
     resource: Resource,
@@ -98,66 +91,6 @@ impl Source for PerfEventSource {
                 accuracy,
             ))
         })?;
-        Ok(())
-    }
-}
-
-/// What identifies a point of a cgroup counted through its processes: metric, resource, pmu.
-type PointKey = (TypedMetricId<u64>, Resource, Option<String>);
-
-/// How often the processes of a cgroup counted through its processes are looked for.
-const SCAN_INTERVAL: Duration = Duration::from_millis(100);
-
-/// The source of a cgroup counted through its processes, see [`crate::tasks`]: one
-/// [`PerfEventSource`] per thread opened, summed.
-pub(super) struct CgroupTasksSource {
-    tracker: Arc<Mutex<Tracker<PerfEventSource>>>,
-}
-
-impl CgroupTasksSource {
-    /// `open_thread` opens the counters of a thread of the cgroup ([`Observable::TaskTree`]).
-    pub(super) fn start(cgroup: String, open_thread: OpenThread<PerfEventSource>) -> anyhow::Result<Self> {
-        let tracker = Arc::new(Mutex::new(Tracker::new(cgroup.clone(), open_thread)));
-        tracker.lock().unwrap().scan();
-
-        // An uncounted process loses what it does until it is found: read cgroup.procs much more
-        // often than the poll, in a thread that stops once the source is dropped.
-        let weak = Arc::downgrade(&tracker);
-        std::thread::Builder::new()
-            .name("perf-cgroup-scan".to_owned())
-            .spawn(move || {
-                loop {
-                    std::thread::sleep(SCAN_INTERVAL);
-                    let Some(tracker) = weak.upgrade() else { break };
-                    tracker.lock().unwrap().scan();
-                }
-            })
-            .context("spawning the cgroup scanner")?;
-        Ok(Self { tracker })
-    }
-}
-
-impl Source for CgroupTasksSource {
-    fn poll(&mut self, measurements: &mut MeasurementAccumulator, timestamp: Timestamp) -> Result<(), PollError> {
-        let mut tracker = self.tracker.lock().unwrap();
-        // The sum of every thread, per metric, resource and pmu, with the worst accuracy.
-        let mut sums: HashMap<PointKey, (ResourceConsumer, u64, Accuracy)> = HashMap::new();
-        for thread in tracker.counters() {
-            let read = thread.read_each(|info, metric, value, accuracy| {
-                let key = (metric, info.resource.clone(), info.pmu_attr.clone());
-                let (_, sum, acc) = sums
-                    .entry(key)
-                    .or_insert_with(|| (info.consumer.clone(), 0, Accuracy::Exact));
-                *sum += value;
-                *acc = (*acc).max(accuracy);
-            });
-            if let Err(e) = read {
-                log::warn!("could not read the counters of a thread: {e:#}");
-            }
-        }
-        for ((metric, resource, pmu), (consumer, sum, accuracy)) in sums {
-            measurements.push(point(timestamp, metric, resource, consumer, pmu, sum, accuracy));
-        }
         Ok(())
     }
 }
@@ -196,8 +129,11 @@ impl PerfEventSourceBuilder {
         let group = group.map(str::to_owned);
 
         match (event.scope(), &self.observable) {
-            (Scope::TaskAttached { binding }, Observable::Process { pid }) => {
-                let target = Target::Process { pid: *pid };
+            (Scope::TaskAttached { binding }, Observable::Process { pid, inherit }) => {
+                let target = Target::Task {
+                    tid: *pid,
+                    inherit: *inherit,
+                };
                 let info = GroupInfo {
                     metrics: Vec::new(),
                     key,
@@ -208,20 +144,6 @@ impl PerfEventSourceBuilder {
                     pmu_attr: binding.as_ref().map(|b| b.pmu.clone()),
                 };
                 self.add_to_group(target, info, event, alumet_metric)?;
-            }
-            (Scope::TaskAttached { binding }, Observable::TaskTree { tid, cgroup }) => {
-                let info = GroupInfo {
-                    metrics: Vec::new(),
-                    key,
-                    cpu_id: None,
-                    group,
-                    resource: resource::for_process(binding.as_ref()),
-                    consumer: ResourceConsumer::ControlGroup {
-                        path: cgroup.clone().into(),
-                    },
-                    pmu_attr: binding.as_ref().map(|b| b.pmu.clone()),
-                };
-                self.add_to_group(Target::TaskTree { tid: *tid }, info, event, alumet_metric)?;
             }
             (Scope::TaskAttached { binding }, Observable::Cgroup { path, fd }) => {
                 // Owned copies, so that `self` is no longer borrowed while groups are added.

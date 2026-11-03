@@ -23,11 +23,11 @@ use alumet::{
 use anyhow::Context;
 
 use crate::event;
-use crate::tasks::OpenThread;
 pub use config::metric_name;
 use config::{CgroupCounting, Config, ConfiguredEvent, ParsedConfig, metric_name_of};
-use source::{CgroupTasksSource, Observable, PerfEventSource, PerfEventSourceBuilder};
+use source::{Observable, PerfEventSource, PerfEventSourceBuilder};
 
+mod cgroup_via_processes;
 mod config;
 mod source;
 
@@ -69,7 +69,7 @@ impl AlumetPlugin for PerfPlugin {
                 CgroupCounting::Native => false,
                 CgroupCounting::ViaProcesses => true,
                 CgroupCounting::Auto => {
-                    let reliable = crate::tasks::cgroup_events_reliable();
+                    let reliable = cgroup_via_processes::cgroup_events_reliable();
                     if !reliable {
                         log::info!(
                             "this kernel may miscount multiplexed cgroup events: cgroups are counted through their processes \
@@ -180,7 +180,7 @@ impl AlumetPlugin for PerfPlugin {
                 let config = config_cloned.lock().unwrap();
                 let (source, source_name): (Box<dyn Source>, String) = match consumer {
                     alumet::resources::ResourceConsumer::Process { pid } => {
-                        let source = task_source(&config, Observable::Process { pid })?;
+                        let source = task_source(&config, Observable::Process { pid, inherit: false })?;
                         (Box::new(source), process_source_name(pid))
                     }
                     alumet::resources::ResourceConsumer::ControlGroup { path } => {
@@ -191,8 +191,8 @@ impl AlumetPlugin for PerfPlugin {
                         // todo: make it dynamic or configurable
                         let absolute_path = format!("/sys/fs/cgroup{path}");
                         let source: Box<dyn Source> = if config.cgroup_via_processes {
-                            let open_thread = thread_opener(&config, path.to_string());
-                            match CgroupTasksSource::start(path.to_string(), open_thread) {
+                            // Workaround for the kernels that miscount multiplexed cgroup events.
+                            match cgroup_via_processes::source(&config, path.to_string()) {
                                 Ok(source) => Box::new(source),
                                 Err(e) => {
                                     log::warn!("cannot observe cgroup {absolute_path}: {e:#}");
@@ -267,23 +267,6 @@ fn task_source(config: &ParsedConfig, observable: Observable) -> anyhow::Result<
         &config.metrics,
         config.multiplexing_auto_scale,
     )
-}
-
-/// Opens the task-attached events on a thread of `cgroup` and on what it creates afterwards.
-fn thread_opener(config: &ParsedConfig, cgroup: String) -> OpenThread<PerfEventSource> {
-    log::info!("Starting to observe cgroup {cgroup} through its processes...");
-    let (events, metrics, auto_scale) = (
-        config.events.clone(),
-        config.metrics.clone(),
-        config.multiplexing_auto_scale,
-    );
-    Box::new(move |tid| {
-        let observable = Observable::TaskTree {
-            tid,
-            cgroup: cgroup.clone(),
-        };
-        build_task_source(observable, &events, &metrics, auto_scale)
-    })
 }
 
 fn build_task_source(

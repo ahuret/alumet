@@ -1,4 +1,5 @@
-//! Counting a cgroup through its tasks, for kernels that miscount multiplexed cgroup events.
+//! Workaround: counting a cgroup through its processes, for kernels that miscount multiplexed
+//! cgroup events (`cgroup_counting = "via_processes"`).
 //!
 //! Since Linux 6.2 (bd2756811766, RHEL 9.3), the cgroup events report a wrong `time_running` once
 //! multiplexed, so their scaled values are wrong (fixed by e4c7c401c6b9 in Linux 7.3). Events
@@ -11,12 +12,29 @@
 //! ([`Tracker::scan`]). This sees every way into the cgroup (fork, move, `CLONE_INTO_CGROUP`); what
 //! an uncounted process does before the next read is lost, which only happens when a new process
 //! arrives in the cgroup (e.g. the slurmstepd of a new step, with its first tasks).
+//!
+//! Everything specific to the workaround is in this module. Once the supported kernels all have the
+//! fix, delete it, with the `cgroup_counting` option and its branch in the plugin's `start`.
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use alumet::{
+    measurement::{MeasurementAccumulator, Timestamp},
+    metrics::TypedMetricId,
+    pipeline::{Source, elements::error::PollError},
+    resources::{Resource, ResourceConsumer},
+};
+use anyhow::Context;
+
+use super::config::ParsedConfig;
+use super::source::{Observable, PerfEventSource, point};
+use crate::group::Accuracy;
 
 /// Whether the cgroup events of this kernel can be trusted when multiplexed.
-pub(crate) fn cgroup_events_reliable() -> bool {
+pub(super) fn cgroup_events_reliable() -> bool {
     // The faulty code came with the rewrite of the context handling, which added this function.
     let rewritten = fs::read_to_string("/proc/kallsyms")
         .is_ok_and(|syms| syms.lines().any(|l| l.ends_with(" __pmu_ctx_sched_out")));
@@ -105,10 +123,10 @@ enum Tracked<T> {
 }
 
 /// Opens the counters of a thread and of what it creates afterwards.
-pub(crate) type OpenThread<T> = Box<dyn Fn(u32) -> anyhow::Result<T> + Send>;
+type OpenThread<T> = Box<dyn Fn(u32) -> anyhow::Result<T> + Send>;
 
 /// The processes of a cgroup to count, and their counters `T`.
-pub(crate) struct Tracker<T> {
+struct Tracker<T> {
     /// Relative to the cgroup root.
     cgroup: String,
     open_thread: OpenThread<T>,
@@ -218,6 +236,91 @@ fn is_no_such_task(e: &anyhow::Error) -> bool {
     e.chain()
         .filter_map(|c| c.downcast_ref::<io::Error>())
         .any(|e| e.raw_os_error() == Some(libc::ESRCH))
+}
+
+// ---------------------------------------------------------------------------------------------
+// The Alumet source
+// ---------------------------------------------------------------------------------------------
+
+/// What identifies a point of the cgroup: metric, resource, pmu.
+type PointKey = (TypedMetricId<u64>, Resource, Option<String>);
+
+/// How often the processes of the cgroup are looked for.
+const SCAN_INTERVAL: Duration = Duration::from_millis(100);
+
+/// The source of a cgroup counted through its processes: one [`PerfEventSource`] per thread
+/// opened, summed and reported as the cgroup.
+pub(super) struct CgroupTasksSource {
+    consumer: ResourceConsumer,
+    tracker: Arc<Mutex<Tracker<PerfEventSource>>>,
+}
+
+/// Starts counting the cgroup `cgroup` (relative to the cgroup root) through its processes.
+pub(super) fn source(config: &ParsedConfig, cgroup: String) -> anyhow::Result<CgroupTasksSource> {
+    log::info!("Starting to observe cgroup {cgroup} through its processes...");
+    let (events, metrics, auto_scale) = (
+        config.events.clone(),
+        config.metrics.clone(),
+        config.multiplexing_auto_scale,
+    );
+    let open_thread: OpenThread<PerfEventSource> = Box::new(move |tid| {
+        let observable = Observable::Process {
+            pid: tid,
+            inherit: true,
+        };
+        super::build_task_source(observable, &events, &metrics, auto_scale)
+    });
+    let tracker = Arc::new(Mutex::new(Tracker::new(cgroup.clone(), open_thread)));
+    tracker.lock().unwrap().scan();
+
+    // An uncounted process loses what it does until it is found: read cgroup.procs much more
+    // often than the poll, in a thread that stops once the source is dropped.
+    let weak = Arc::downgrade(&tracker);
+    std::thread::Builder::new()
+        .name("perf-cgroup-scan".to_owned())
+        .spawn(move || {
+            loop {
+                std::thread::sleep(SCAN_INTERVAL);
+                let Some(tracker) = weak.upgrade() else { break };
+                tracker.lock().unwrap().scan();
+            }
+        })
+        .context("spawning the cgroup scanner")?;
+    Ok(CgroupTasksSource {
+        consumer: ResourceConsumer::ControlGroup { path: cgroup.into() },
+        tracker,
+    })
+}
+
+impl Source for CgroupTasksSource {
+    fn poll(&mut self, measurements: &mut MeasurementAccumulator, timestamp: Timestamp) -> Result<(), PollError> {
+        let mut tracker = self.tracker.lock().unwrap();
+        // The sum of every thread, per metric, resource and pmu, with the worst accuracy.
+        let mut sums: HashMap<PointKey, (u64, Accuracy)> = HashMap::new();
+        for thread in tracker.counters() {
+            let read = thread.read_each(|info, metric, value, accuracy| {
+                let key = (metric, info.resource.clone(), info.pmu_attr.clone());
+                let (sum, acc) = sums.entry(key).or_insert((0, Accuracy::Exact));
+                *sum += value;
+                *acc = (*acc).max(accuracy);
+            });
+            if let Err(e) = read {
+                log::warn!("could not read the counters of a thread: {e:#}");
+            }
+        }
+        for ((metric, resource, pmu), (sum, accuracy)) in sums {
+            measurements.push(point(
+                timestamp,
+                metric,
+                resource,
+                self.consumer.clone(),
+                pmu,
+                sum,
+                accuracy,
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
